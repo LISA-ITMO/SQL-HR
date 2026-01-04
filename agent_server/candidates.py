@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 # --- SQLAlchemy ORM base & types ---
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -68,28 +68,8 @@ class CandidateOut(BaseModel):
     has_car: Optional[bool] = None
 
 
-# Для совместимости с прежним импортом: Candidate == CandidateOut
+ # Для совместимости с прежним импортом: Candidate == CandidateOut
 Candidate = CandidateOut
-
-
-class CandidateScore(BaseModel):
-    """Оценённый кандидат. Здесь оставляем только approved (как в твоём наброске)."""
-    candidate: CandidateOut = Field(..., description="Кандидат (как JSON-схема)")
-    approved: bool = Field(..., description="Соответствует ли кандидат запросу")
-
-
-class TopCandidates(BaseModel):
-    accent: str = Field(..., description="Акцент (вариант формулировки запроса)")
-    candidates: List[CandidateScore] = Field(
-        ..., description="Список кандидатов с флагом соответствия по данному акценту"
-    )
-
-
-class NormIDs(BaseModel):
-    """Структурированный ответ LLM с нормализованными/выбранными id кандидатов."""
-    candidates: List[uuid.UUID] = Field(
-        ..., description="Список id кандидатов, которые подходят под запрос"
-    )
 
 
 __all__ = [
@@ -97,7 +77,4 @@ __all__ = [
     "CandidateORM",
     "CandidateOut",
     "Candidate",
-    "CandidateScore",
-    "TopCandidates",
-    "NormIDs",
 ]
