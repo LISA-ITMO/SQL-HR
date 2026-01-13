@@ -1,58 +1,49 @@
 services:
   vllm:
-    image: vllm/vllm-openai:latest
+    image: ghcr.io/ggml-org/llama.cpp:server
     container_name: vllm
+    
+    mem_limit: 16g
+    memswap_limit: 16g   # запрет swap (рекомендуется для llama.cpp)
+
     restart: unless-stopped
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - HF_HOME=/root/.cache/huggingface
-      - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
-      - TORCH_HOME=/root/.cache/huggingface
-      - VLLM_DOWNLOAD_DIR=/root/.cache/huggingface
-      - HF_HUB_ENABLE_HF_TRANSFER=0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+
+    # HF cache сохраняется в папку на хосте
+    volumes:
+      - ./hf-cache:/root/.cache
+
     command:
-      - --model
-      - Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4
-      - --gpu-memory-utilization
-      - "0.75"
-      - --max-model-len
-      - "20000"
+      - --hf-repo
+      - rippertnt/Qwen3-1.7B-Q4_K_M-GGUF
+      - --hf-file
+      - qwen3-1.7b-q4_k_m.gguf
+
+      - --alias
+      - ${VLLM_MODEL:-qwen3-1.7b}
+
       - --host
-      - "0.0.0.0"
+      - 0.0.0.0
       - --port
       - "8001"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - hermes
+
+      - --threads
+      - ${LLAMA_THREADS:-12}
+      - --ctx-size
+      - ${LLAMA_CTX:-12000}
+      - --batch-size
+      - ${LLAMA_BATCH:-512}
+      - --jinja
 
     ports:
       - "${VLLM_HOST_PORT:-18001}:8001"
 
-    volumes:
-      - ./hf-cache:/root/.cache/huggingface
-
-    ipc: host
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8001/v1/models >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 60
-      start_period: 600s
 
   agent_server:
     build:
       context: ./agent_server
     depends_on:
       vllm:
-        condition: service_healthy
+        condition: service_started
       postgres:
         condition: service_healthy
     env_file:

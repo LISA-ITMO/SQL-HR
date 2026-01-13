@@ -533,13 +533,15 @@ def sub_report_node(state: SubState) -> SubState:
 
 def sub_result_node(state: SubState) -> SubState:
     """Build the final result for the main agent using State-only data."""
+    max_candidates = max(1, int(os.getenv("SUB_AGENT_MAX_CANDIDATES", "5")))
     ids: List[str] = list(state.get("selected_ids", []) or [])
     last_pool: List[str] = list(state.get("last_pool", []) or [])
 
     # Fallback: if the agent never saved ids, take ids from the last db_search.
     if not ids and last_pool:
-        ids = last_pool[:5]
+        ids = last_pool[:max_candidates]
 
+    ids = ids[:max_candidates]
     candidates = fetch_candidates_by_ids(ids)
     result = {
         "selected_ids": ids,
