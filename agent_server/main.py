@@ -5,7 +5,7 @@ import json
 import ast
 import uuid
 import logging
-from typing import TypedDict, List, Dict, Optional, Any, Literal
+from typing import TypedDict, List, Dict, Optional, Any, Literal, Union
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -29,7 +29,7 @@ from langchain_core.messages import (
 from langchain_core.tools import tool
 
 # наши модели и узлы
-from candidates import CandidateScore, TopCandidates
+from candidates import CandidateScore, TopCandidates, CandidateOut
 from nodes import (
     node_generate_accents,
     node_choose_candidates,
@@ -226,6 +226,7 @@ def choose_candidates(query: str) -> List[str]:
     возвращает список id найденных кандидатов (строками).
 
     LLM видит только список id, а полные данные мы достаём на бэке.
+    В get_candidate_by_id используются id отсюда.
     """
     state: CandidateState = candidate_graph.invoke({"task": query})
     ranked: List[CandidateScore] = state.get("ranked", [])  # может отсутствовать
@@ -233,6 +234,104 @@ def choose_candidates(query: str) -> List[str]:
     logger.info("choose_candidates tool: picked %d candidates", len(ids))
     return ids
 
+@tool
+def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
+    """
+    Тул для ии-агента, который ищет информацию о кандидатах в базе данных по данным id
+
+    :param candidates_ids: список id (UUID объекты, которые вернул choose_candidates. Не просто число)
+    :return: словарь с результатами поиска
+    """
+
+    if not candidates_ids:
+        logger.info("get_candidate_by_id tool: candidates_ids were not given")
+        return {'result': 'candidates ids were not given'}
+
+    # Преобразуем все ID в строки для запроса
+    str_ids = []
+    for cid in candidates_ids:
+        if isinstance(cid, UUID):
+            str_ids.append(str(cid))
+        elif isinstance(cid, str):
+            try:
+                # Проверяем что строка - валидный UUID
+                UUID(cid)
+                str_ids.append(cid)
+            except ValueError:
+                logger.warning(f"Invalid UUID string: {cid}")
+                continue
+        else:
+            logger.warning(f"Unsupported ID type: {type(cid)}")
+            continue
+
+    if not str_ids:
+        logger.info("get_candidate_by_id tool: no valid IDs provided")
+        return {'result': 'no valid UUIDs provided'}
+
+    # Создаем параметры для запроса
+    placeholders = ", ".join([f":id_{i}" for i in range(len(str_ids))])
+    params = {f"id_{i}": cid for i, cid in enumerate(str_ids)}
+
+    query = text(f"""
+        SELECT
+            id::text, 
+            sex,
+            expected_salary_rub,
+            desired_position,
+            city,
+            ready_to_relocate,
+            ready_for_business_trips,
+            employment_type,
+            work_schedule,
+            work_experience,
+            last_company,
+            last_job_title,
+            education_level_and_university,
+            resume_updated_at,
+            has_car
+        FROM candidates
+        WHERE id::text IN ({placeholders})
+    """)
+
+    result = {'result': {}}
+
+    # Инициализируем результат для всех valid ID
+    for cid in str_ids:
+        result['result'][cid] = {
+            'requested_id': cid,
+            'status': 'not found',
+            'data': None
+        }
+
+    try:
+        global engine
+        with engine.connect() as conn:
+            rows = conn.execute(query, params).mappings().all()
+
+        for row in rows:
+            row_dict = dict(row)
+            candidate_id = row_dict['id']  # уже строка
+
+            # Преобразуем данные в CandidateOut
+            try:
+                candidate_data = CandidateOut(**row_dict).model_dump()
+
+                result['result'][candidate_id]['status'] = 'found'
+                result['result'][candidate_id]['data'] = candidate_data
+
+                logger.info(f"get_candidate_by_id tool: {candidate_id} was found")
+            except Exception as e:
+                result['result'][candidate_id]['status'] = 'error processing data'
+                result['result'][candidate_id]['error'] = str(e)
+                logger.error(f"Error processing candidate {candidate_id}: {e}")
+
+    except Exception as e:
+        # В случае ошибки БД
+        error_msg = str(e)
+        result['error'] = error_msg
+        logger.error(f"get_candidate_by_id tool: database error: {error_msg}")
+
+    return result
 
 def add_messages(left: List[AnyMessage], right: List[AnyMessage]) -> List[AnyMessage]:
     return left + right
@@ -242,9 +341,8 @@ class AgentState(TypedDict):
     messages: Annotated[List[AnyMessage], add_messages]
 
 
-tools = [choose_candidates]
+tools = [choose_candidates, get_candidate_by_id]
 tool_node = ToolNode(tools)
-
 
 def agent_node(state: AgentState) -> AgentState:
     """LLM-агент, умеющий вызывать инструменты."""
@@ -290,6 +388,11 @@ CHAT_SYSTEM_PROMPT = (
     "сформулировать запрос к кандидату. "
     "Когда человек просит подобрать кандидатов (или информации достаточно), "
     "вызови инструмент choose_candidates. "
+    "Если пользователь явно просит детали по конкретным кандидатам или эти детали "
+    "нужны, чтобы ответить на его вопрос, используй get_candidate_by_id только для "
+    "этих кандидатов (UUID бери из результата choose_candidates). "
+    "Не запрашивай через get_candidate_by_id всех кандидатов подряд — пользователь "
+    "и так видит профили последних кандидатов у себя на экране. "
     "Говори по-русски, дружелюбно, без лишней воды."
 )
 
