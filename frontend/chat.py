@@ -180,16 +180,31 @@ with st.sidebar:
     if st.session_state.candidates:
         for cand_id, candidate in st.session_state.candidates.items():
             with st.container(border=True):
-                desired = candidate.get("desired_position", "Позиция не указана")
-                st.markdown(f"#### {desired}")
+                full_name = " ".join(
+                    [
+                        part
+                        for part in [
+                            candidate.get("last_name"),
+                            candidate.get("first_name"),
+                            candidate.get("middle_name"),
+                        ]
+                        if part
+                    ]
+                )
+                st.markdown(f"#### {full_name or 'Кандидат'}")
 
                 st.markdown(f"**ID:** `{cand_id}`")
-                if "expected_salary_rub" in candidate:
-                    st.markdown(f"**Ожидаемая зарплата, ₽:** {candidate['expected_salary_rub']}")
+                if "residence_area" in candidate and candidate.get("residence_area"):
+                    st.markdown(f"**Район проживания:** {candidate.get('residence_area')}")
 
                 with st.expander("Показать остальные поля"):
                     for field, value in candidate.items():
-                        if field in ("desired_position", "expected_salary_rub"):
+                        if field in (
+                            "last_name",
+                            "first_name",
+                            "middle_name",
+                            "residence_area",
+                        ):
                             continue
                         st.markdown(f"**{field}:** {value}")
     else:

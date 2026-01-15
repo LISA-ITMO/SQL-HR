@@ -1,8 +1,49 @@
 services:
+  vllm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: vllm
+    
+    mem_limit: 16g
+    memswap_limit: 16g   # запрет swap (рекомендуется для llama.cpp)
+
+    restart: unless-stopped
+
+    # HF cache сохраняется в папку на хосте
+    volumes:
+      - ./hf-cache:/root/.cache
+
+    command:
+      - --hf-repo
+      - rippertnt/Qwen3-1.7B-Q4_K_M-GGUF
+      - --hf-file
+      - qwen3-1.7b-q4_k_m.gguf
+
+      - --alias
+      - ${LLAMA_MODEL:-qwen3-1.7b}
+
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+
+      - --threads
+      - ${LLAMA_THREADS:-12}
+      - --ctx-size
+      - ${LLAMA_CTX:-12000}
+      - --batch-size
+      - ${LLAMA_BATCH:-512}
+      - --jinja
+
+    ports:
+      - "${LLAMA_HOST_PORT:-18001}:8001"
+
+
   agent_server:
     build:
       context: ./agent_server
     depends_on:
+      vllm:
+        condition: service_started
       postgres:
         condition: service_healthy
     env_file:

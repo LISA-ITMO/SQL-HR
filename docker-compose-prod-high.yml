@@ -2,24 +2,20 @@ services:
   vllm:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: vllm
-    
-    mem_limit: 16g
-    memswap_limit: 16g   # запрет swap (рекомендуется для llama.cpp)
 
+    mem_limit: 16g
+    memswap_limit: 16g
     restart: unless-stopped
 
-    # HF cache сохраняется в папку на хосте
     volumes:
       - ./hf-cache:/root/.cache
 
     command:
-      - --hf-repo
-      - rippertnt/Qwen3-1.7B-Q4_K_M-GGUF
-      - --hf-file
-      - qwen3-1.7b-q4_k_m.gguf
+      - --model
+      - /root/.cache/llama.cpp/Qwen2.5-7B-Instruct.Q4_K_S.gguf
 
       - --alias
-      - ${VLLM_MODEL:-qwen3-1.7b}
+      - ${LLAMA_MODEL:-qwen2.5-7b-instruct-q4ks}
 
       - --host
       - 0.0.0.0
@@ -35,7 +31,7 @@ services:
       - --jinja
 
     ports:
-      - "${VLLM_HOST_PORT:-18001}:8001"
+      - "${LLAMA_HOST_PORT:-18001}:8001"
 
 
   agent_server:
@@ -49,19 +45,20 @@ services:
     env_file:
       - .env
     environment:
-      USE_VLLM: ${USE_VLLM:-true}
+      USE_LLAMA: ${USE_LLAMA:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm:8001/v1}
-      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4}
-      VLLM_KEY: ${VLLM_KEY:-fake-key}
-      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8001/v1}
+      LLAMA_MODEL: ${LLAMA_MODEL:-Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4}
+      LLAMA_KEY: ${LLAMA_KEY:-fake-key}
+      LLAMA_BASE_URL: ${LLAMA_BASE_URL:-http://vllm:8001/v1}
       PROXY_MODEL: ${PROXY_MODEL:-gpt-4o-mini}
       PROXY_API_KEY: ${PROXY_API_KEY:-}
       PROXY_BASE_URL: ${PROXY_BASE_URL:-https://api.openai.com/v1}
       RESULT_FILE: /results/result.txt
+      SUB_AGENT_REPORT_DIR: /results
     volumes:
-      - ./results:/results
+      - ${RESULTS_DIR:-./results}:/results
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\""]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -92,7 +89,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./db/postgres:/var/lib/postgresql/data
       - ./data/candidates.csv:/data/candidates.csv:ro
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./db/add_rows.sql:/docker-entrypoint-initdb.d/02-add_rows.sql:ro
@@ -116,5 +113,4 @@ services:
       - pgadmin_data:/var/lib/pgadmin
 
 volumes:
-  pgdata:
   pgadmin_data:

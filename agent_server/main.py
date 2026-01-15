@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import uuid
-from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
+from datetime import date, datetime
+from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict, Union
+from uuid import UUID
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, create_engine, or_, select
+from sqlalchemy import and_, create_engine, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
@@ -39,6 +41,8 @@ from candidates import CandidateORM as C
 from candidates import CandidateOut
 from prompts import (
     MAIN_AGENT_SYSTEM_PROMPT,
+    CANDIDATE_REPORT_PROMPT,
+    CLARIFY_WITH_MAIN_SYSTEM_PROMPT,
     SEARCH_REPORT_PROMPT,
     SUB_AGENT_LAST_TRY_PROMPT,
     SUB_AGENT_SYSTEM_PROMPT,
@@ -46,6 +50,47 @@ from prompts import (
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
+
+SUB_AGENT_REPORT_DIR = os.getenv("SUB_AGENT_REPORT_DIR", "result")
+SUB_AGENT_REPORT_FILE = os.getenv(
+    "SUB_AGENT_REPORT_FILE",
+    os.path.join(SUB_AGENT_REPORT_DIR, "sup_agent_report.txt"),
+)
+SAVE_RESULT = os.getenv("SAVE_RESULT", "True").lower() == "true"
+
+def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) -> None:
+    """Persist sub-agent tool calls/results and final report to a local file."""
+    if not SAVE_RESULT:
+        logger.info("sub-agent report skipped (SAVE_RESULT=False)")
+        return
+    try:
+        os.makedirs(os.path.dirname(SUB_AGENT_REPORT_FILE) or ".", exist_ok=True)
+        base, ext = os.path.splitext(SUB_AGENT_REPORT_FILE)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = f"{base}_{timestamp}{ext or '.txt'}"
+        lines: List[str] = []
+        lines.append("task:")
+        lines.append(task or "")
+        lines.append("")
+        lines.append("tool_calls:")
+        for msg in messages:
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                for call in msg.tool_calls:
+                    name = call.get("name") if isinstance(call, dict) else None
+                    args = call.get("args") if isinstance(call, dict) else None
+                    lines.append(f"- call name={name} args={args}")
+            elif isinstance(msg, ToolMessage):
+                tool_name = _tool_name(msg)
+                content = msg.content
+                lines.append(f"- result name={tool_name} content={content}")
+        lines.append("")
+        lines.append("report:")
+        lines.append(report or "")
+        lines.append("")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+    except Exception:
+        logger.exception("failed to write sub-agent report")
 
 
 def _parse_tool_payload(content: Any) -> Any:
@@ -97,11 +142,11 @@ class API:
     llm: ChatOpenAI
 
     def __init__(self) -> None:
-        use_vllm = os.getenv("USE_VLLM", "True") == "True"
+        use_llama = os.getenv("USE_LLAMA", "True") == "True"
 
-        vllm_model = os.getenv("VLLM_MODEL")
-        vllm_key = os.getenv("VLLM_KEY")
-        vllm_base_url = os.getenv("VLLM_BASE_URL", "http://vllm:8001/v1")
+        llama_model = os.getenv("LLAMA_MODEL")
+        llama_key = os.getenv("LLAMA_KEY")
+        llama_base_url = os.getenv("LLAMA_BASE_URL", "http://vllm:8001/v1")
 
         proxy_model = os.getenv("PROXY_MODEL")
         proxy_api_key = os.getenv("PROXY_API_KEY")
@@ -110,29 +155,29 @@ class API:
         llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
         logger.info(
-            "LLM init: use_vllm=%s, vllm_model=%r, vllm_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
-            use_vllm,
-            vllm_model,
-            vllm_base_url,
+            "LLM init: use_llama=%s, llama_model=%r, llama_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
+            use_llama,
+            llama_model,
+            llama_base_url,
             proxy_model,
             proxy_base_url,
             bool(proxy_api_key),
             llm_max_tokens,
         )
 
-        if use_vllm:
-            if not vllm_model:
-                raise RuntimeError("USE_VLLM=true, но VLLM_MODEL не задан")
+        if use_llama:
+            if not llama_model:
+                raise RuntimeError("USE_LLAMA=true, но LLAMA_MODEL не задан")
             self.llm = ChatOpenAI(
-                model=vllm_model,
-                api_key=vllm_key,
-                base_url=vllm_base_url,
+                model=llama_model,
+                api_key=llama_key,
+                base_url=llama_base_url,
                 temperature=0,
                 max_tokens=llm_max_tokens,
             )
         else:
             if not proxy_model:
-                raise RuntimeError("USE_VLLM=false, но PROXY_MODEL не задан")
+                raise RuntimeError("USE_LLAMA=false, но PROXY_MODEL не задан")
             self.llm = ChatOpenAI(
                 model=proxy_model,
                 api_key=proxy_api_key,
@@ -152,37 +197,59 @@ llm = api.llm
 
 
 class QuerySpec(BaseModel):
-    city: Optional[str] = Field(
+    birth_date_from: Optional[date] = Field(
         default=None,
-        description="Название города/региона, который должен упоминаться в поле `city` кандидата.",
+        description="Дата рождения от (YYYY-MM-DD).",
     )
-    min_salary_rub: Optional[int] = Field(
+    birth_date_to: Optional[date] = Field(
         default=None,
-        description="Нижняя граница ожидаемой зарплаты кандидата (в рублях).",
+        description="Дата рождения до (YYYY-MM-DD).",
     )
-    max_salary_rub: Optional[int] = Field(
+    appointment_date_from: Optional[date] = Field(
         default=None,
-        description="Верхняя граница ожидаемой зарплаты кандидата (в рублях).",
+        description="Дата назначения от (YYYY-MM-DD).",
     )
-    ready_to_relocate: Optional[bool] = Field(
+    appointment_date_to: Optional[date] = Field(
         default=None,
-        description="True/False, требуется ли готовность переезда.",
+        description="Дата назначения до (YYYY-MM-DD).",
+    )
+    dismissal_date_from: Optional[date] = Field(
+        default=None,
+        description="Дата увольнения от (YYYY-MM-DD).",
+    )
+    dismissal_date_to: Optional[date] = Field(
+        default=None,
+        description="Дата увольнения до (YYYY-MM-DD).",
     )
     keywords_any: List[str] = Field(
         default_factory=list,
-        description="Список ключевых слов, из которых должно встретиться хотя бы одно в `work_experience`.",
+        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
     )
     keywords_all: List[str] = Field(
         default_factory=list,
-        description="Ключевые слова, которые обязательно должны присутствовать одновременно в `work_experience`.",
+        description="Ключевые слова, которые обязательно должны присутствовать одновременно в текстовых полях.",
     )
     keywords_not: List[str] = Field(
         default_factory=list,
-        description="Ключевые слова, которые не должны встречаться в `work_experience`.",
+        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
     )
-    seniority: Optional[Literal["junior", "middle", "senior", "lead"]] = Field(
+    education_count: Optional[int] = Field(
         default=None,
-        description="Требуемый уровень кандидата (одно из: junior/middle/senior/lead).",
+        ge=0,
+        description="Минимальное количество образований (>=).",
+    )
+    confirmed_experience_years_min: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Минимальный подтвержденный опыт на последней работе в годах (>=).",
+    )
+    offset: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Сколько строк пропустить (pagination). "
+            "Назначай только если предыдущий такой же запрос вернул максимум (limit)."
+        ),
     )
     limit: int = Field(
         5,
@@ -192,45 +259,87 @@ class QuerySpec(BaseModel):
     )
 
 
-def _short(txt: Optional[str], limit: int = 500) -> Optional[str]:
+def _short(txt: Optional[str], limit: int = 1000) -> Optional[str]:
     if not txt:
         return txt
     return txt if len(txt) <= limit else (txt[:limit] + "…")
 
 
+def _compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("education_text", "work_text", "extra_info_text"):
+        if key in candidate:
+            candidate[key] = _short(candidate.get(key))
+    for key in ("date_received", "birth_date", "appointment_date", "dismissal_date"):
+        value = candidate.get(key)
+        if hasattr(value, "isoformat"):
+            candidate[key] = value.isoformat()
+    if "confirmed_experience_years" in candidate and candidate["confirmed_experience_years"] is not None:
+        candidate["confirmed_experience_years"] = float(candidate["confirmed_experience_years"])
+    return candidate
+
+
 def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
+    def _clean_keywords(values: Optional[List[str]]) -> List[str]:
+        cleaned: List[str] = []
+        for raw in values or []:
+            if raw is None:
+                continue
+            value = str(raw).strip()
+            if value:
+                cleaned.append(value)
+        return cleaned
+
+    keywords_all = _clean_keywords(spec.keywords_all)
+    keywords_any = _clean_keywords(spec.keywords_any)
+    keywords_not = _clean_keywords(spec.keywords_not)
+
     clauses = []
-    if spec.city:
-        clauses.append(C.city.ilike(f"%{spec.city}%"))
-    if spec.seniority:
-        term = str(spec.seniority)
-        clauses.append(
-            or_(
-                C.desired_position.ilike(f"%{term}%"),
-                C.work_experience.ilike(f"%{term}%"),
-            )
+    if spec.birth_date_from:
+        clauses.append(C.birth_date >= spec.birth_date_from)
+    if spec.birth_date_to:
+        clauses.append(C.birth_date <= spec.birth_date_to)
+    if spec.appointment_date_from:
+        clauses.append(C.appointment_date >= spec.appointment_date_from)
+    if spec.appointment_date_to:
+        clauses.append(C.appointment_date <= spec.appointment_date_to)
+    if spec.dismissal_date_from:
+        clauses.append(C.dismissal_date >= spec.dismissal_date_from)
+    if spec.dismissal_date_to:
+        clauses.append(C.dismissal_date <= spec.dismissal_date_to)
+    if spec.education_count is not None:
+        clauses.append(C.education_count >= spec.education_count)
+    if spec.confirmed_experience_years_min is not None:
+        clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
+
+    def _text_match(keyword: str):
+        pattern = f"%{keyword}%"
+        # NULL-safe matching so NOT conditions don't null out the whole filter.
+        return or_(
+            func.coalesce(C.last_name, "").ilike(pattern),
+            func.coalesce(C.first_name, "").ilike(pattern),
+            func.coalesce(C.middle_name, "").ilike(pattern),
+            func.coalesce(C.residence_area, "").ilike(pattern),
+            func.coalesce(C.education_text, "").ilike(pattern),
+            func.coalesce(C.work_text, "").ilike(pattern),
+            func.coalesce(C.extra_info_text, "").ilike(pattern),
         )
-    if spec.min_salary_rub is not None:
-        clauses.append(C.expected_salary_rub >= spec.min_salary_rub)
-    if spec.max_salary_rub is not None:
-        clauses.append(C.expected_salary_rub <= spec.max_salary_rub)
-    if spec.ready_to_relocate is not None:
-        clauses.append(C.ready_to_relocate == spec.ready_to_relocate)
 
-    for kw in (spec.keywords_all or []):
-        clauses.append(C.work_experience.ilike(f"%{kw}%"))
+    for kw in keywords_all:
+        clauses.append(_text_match(kw))
 
-    any_clauses = [C.work_experience.ilike(f"%{kw}%") for kw in (spec.keywords_any or [])]
+    any_clauses = [_text_match(kw) for kw in keywords_any]
     if any_clauses:
         clauses.append(or_(*any_clauses))
 
-    not_clauses = [~C.work_experience.ilike(f"%{kw}%") for kw in (spec.keywords_not or [])]
+    not_clauses = [~_text_match(kw) for kw in keywords_not]
     if not_clauses:
         clauses.append(and_(*not_clauses))
 
     stmt = select(C)
     if clauses:
         stmt = stmt.where(and_(*clauses))
+    if int(spec.offset or 0) > 0:
+        stmt = stmt.offset(int(spec.offset))
     stmt = stmt.limit(int(spec.limit or 5))
 
     rows = session.scalars(stmt).all()
@@ -260,7 +369,11 @@ def fetch_candidates_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
     with SessionLocal() as session:
         stmt = select(C).where(C.id.in_(uuid_ids))
         rows = session.scalars(stmt).all()
-        return [CandidateOut.model_validate(r).model_dump() for r in rows]
+        output: List[Dict[str, Any]] = []
+        for row in rows:
+            data = CandidateOut.model_validate(row).model_dump()
+            output.append(_compact_candidate(data))
+        return output
 
 
 # ------------------------
@@ -310,11 +423,18 @@ def clarify_with_main(
     question: str,
     state: Annotated[dict, InjectedState],
 ) -> Dict[str, Any]:
-    """Ask the main agent for clarification using the main agent's message history.
+    """Назначение:
+        Задать уточняющий вопрос основному агенту, если данных не хватает.
 
-    The sub-agent receives the main chat history in `state['context']` as a List[AnyMessage].
-    We consult a separate LLM call that *thinks it is the main agent*.
-    The clarification request is delivered as a ToolMessage ("тул спрашивает уточняющий вопрос: …").
+        Когда использовать:
+        - критерии поиска неясны (позиция, опыт, локация, зарплата, навыки и т.д.)
+        - пользователь просит “лучших”, но не говорит по каким параметрам
+
+        Вход:
+        - question: что именно нужно уточнить
+
+        Выход:
+        - текст уточняющего вопроса
     """
 
     logger.info("tool=clarify_with_main start question=%r", _short(question))
@@ -325,62 +445,20 @@ def clarify_with_main(
     # Build a valid tool-message pair for providers that require tool_call_id matching.
     call_id = f"clarify_{uuid.uuid4().hex}"
     tool_question = f"тул спрашивает уточняющий вопрос: {question}".strip()
-    tool_call_stub = AIMessage(
-        content="",
-        additional_kwargs={
-            "tool_calls": [
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": "clarify_with_main", "arguments": "{}"},
-                }
-            ]
-        },
-    )
 
     msgs: List[AnyMessage] = [
-        SystemMessage(
-            content=(
-                MAIN_AGENT_SYSTEM_PROMPT
-                + "\n\nТы отвечаешь как основной агент на уточняющий вопрос, полученный от инструмента. "
-                + "Если ответа в истории нет, укажи need_user=true и сформулируй один вопрос пользователю." 
-                + "\n\nВерни строго JSON формата: "
-                + "{\"answer\": <строка>, \"need_user\": <true/false>, \"user_question\": <строка>}"
-            )
-        ),
+        SystemMessage(content=CLARIFY_WITH_MAIN_SYSTEM_PROMPT),
         *context_msgs,
-        tool_call_stub,
         ToolMessage(content=tool_question, tool_call_id=call_id),
     ]
     try:
         raw = llm.invoke(msgs).content
-        parsed = _parse_tool_payload(raw)
-        if isinstance(parsed, dict):
-            result = {
-                "answer": str(parsed.get("answer", "")),
-                "need_user": bool(parsed.get("need_user", False)),
-                "user_question": str(parsed.get("user_question", "")),
-            }
-            logger.info(
-                "tool=clarify_with_main done need_user=%s answer_len=%s",
-                result["need_user"],
-                len(result["answer"] or ""),
-            )
-            return result
-        result = {"answer": str(raw), "need_user": True, "user_question": question}
-        logger.info(
-            "tool=clarify_with_main done need_user=%s answer_len=%s",
-            result["need_user"],
-            len(result["answer"] or ""),
-        )
+        result = {"answer": str(raw)}
+        logger.info("tool=clarify_with_main done answer_len=%s", len(result["answer"] or ""))
         return result
     except Exception:
         logger.exception("clarify_with_main failed")
-        return {
-            "answer": "Не удалось уточнить детали автоматически.",
-            "need_user": True,
-            "user_question": question,
-        }
+        return {"answer": "Не удалось уточнить детали автоматически."}
 
 
 @tool
@@ -388,20 +466,24 @@ def db_search(
     spec: QuerySpec,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Search the DB and return up to 5 candidates (compact payload for LLM).
+    """Назначение:
+        Найти кандидатов в базе по заданным фильтрам (QuerySpec).
 
-    Also saves ids from the latest search into `last_pool` in the sub-agent state.
-    """
+        Когда использовать:
+        - нужно получить список подходящих кандидатов по критериям
+        - нужно быстро посмотреть варианты и выбрать ID
+
+        Вход:
+        - spec (QuerySpec): фильтры поиска (ключевые слова, поля, лимит и т.п.)
+
+        Выход:
+        - список найденных кандидатов (кратко) + общее число совпадений
+ """
     logger.info(
-        "tool=db_search start city=%r min_salary_rub=%s max_salary_rub=%s ready_to_relocate=%s keywords_any=%s keywords_all=%s keywords_not=%s seniority=%r limit=%s",
-        _short(spec.city),
-        spec.min_salary_rub,
-        spec.max_salary_rub,
-        spec.ready_to_relocate,
+        "tool=db_search start keywords_any=%s keywords_all=%s keywords_not=%s limit=%s",
         len(spec.keywords_any or []),
         len(spec.keywords_all or []),
         len(spec.keywords_not or []),
-        _short(spec.seniority),
         spec.limit,
     )
     with SessionLocal() as session:
@@ -409,14 +491,20 @@ def db_search(
     payload = [
         {
             "id": str(c.id),
-            "desired_position": c.desired_position,
-            "city": c.city,
-            "expected_salary_rub": c.expected_salary_rub,
-            "ready_to_relocate": c.ready_to_relocate,
-            "resume_updated_at": c.resume_updated_at.isoformat() if c.resume_updated_at else None,
-            "work_experience": _short(c.work_experience),
-            "last_company": c.last_company,
-            "last_job_title": c.last_job_title,
+            "last_name": c.last_name,
+            "first_name": c.first_name,
+            "middle_name": c.middle_name,
+            "residence_area": c.residence_area,
+            "birth_date": c.birth_date.isoformat() if c.birth_date else None,
+            "education_count": c.education_count,
+            "education_text": _short(c.education_text),
+            "work_text": _short(c.work_text),
+            "extra_info_text": _short(c.extra_info_text),
+            "appointment_date": c.appointment_date.isoformat() if c.appointment_date else None,
+            "dismissal_date": c.dismissal_date.isoformat() if c.dismissal_date else None,
+            "confirmed_experience_years": float(c.confirmed_experience_years)
+            if c.confirmed_experience_years is not None
+            else None,
         }
         for c in rows
     ]
@@ -441,10 +529,19 @@ def save_candidate_ids(
     ids: List[str],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Save chosen candidate ids (sub-agent will return them to the main agent).
+    """Назначение:
+        Сохранить выбранные ID кандидатов для последующих шагов.
 
-    Also accumulates ids into `selected_ids` in the sub-agent state.
-    """
+        Когда использовать:
+        - ты отобрал кандидатов и хочешь зафиксировать их ID
+        - дальше нужно получить подробности по этим кандидатам
+
+        Вход:
+        - ids: список ID кандидатов
+
+        Выход:
+        - подтверждение сохранения списка ID
+"""
     logger.info("tool=save_candidate_ids start ids_count=%s", len(ids or []))
     normalized: List[str] = []
     seen: set[str] = set()
@@ -484,8 +581,10 @@ def sub_agent_node(state: SubState) -> SubState:
     )
     llm_with_tools = llm.bind_tools(sub_tools)
     msgs: List[AnyMessage] = list(state.get("messages", []))
+    iters_left = int(state.get("iterations_left", 0))
+    msgs.append(SystemMessage(content=f"Итераций осталось: {iters_left}"))
     # Force selection on the last try.
-    if int(state.get("iterations_left", 0)) <= 1:
+    if iters_left <= 1:
         msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
     response = llm_with_tools.invoke(msgs)
     next_state = {
@@ -521,12 +620,51 @@ def sub_report_node(state: SubState) -> SubState:
         f"iterations_left={state.get('iterations_left')}",
     ]
     report_context = "\n".join(summary_lines)
-    report = llm.invoke(
+    report_search = llm.invoke(
         [
             SystemMessage(content=SEARCH_REPORT_PROMPT),
-            HumanMessage(content=f"Контекст процесса:\n{report_context}"),
+            HumanMessage(content=f"История сообщений:\n{report_context}"),
         ]
     ).content
+
+    selected_ids: List[str] = list(state.get("selected_ids", []) or [])
+    report_candidates = ""
+    if selected_ids:
+        candidates = fetch_candidates_by_ids(selected_ids)
+        compact_payload = [
+            {
+                "id": str(c.get("id")),
+                "full_name": " ".join(
+                    [p for p in [c.get("last_name"), c.get("first_name"), c.get("middle_name")] if p]
+                ),
+                "residence_area": c.get("residence_area"),
+                "birth_date": c.get("birth_date"),
+                "education_count": c.get("education_count"),
+                "education_text": _short(str(c.get("education_text") or "")),
+                "work_text": _short(str(c.get("work_text") or "")),
+                "extra_info_text": _short(str(c.get("extra_info_text") or "")),
+            }
+            for c in candidates
+            if isinstance(c, dict)
+        ]
+        task = str(state.get("task") or "")
+        report_candidates = llm.invoke(
+            [
+                SystemMessage(content=CANDIDATE_REPORT_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Запрос пользователя:\n{task}\n\n"
+                        f"Кандидаты:\n{json.dumps(compact_payload, ensure_ascii=False, default=str)}"
+                    )
+                ),
+            ]
+        ).content
+
+    report = "Отчет по поиску:\n{search}".format(search=report_search)
+    if report_candidates:
+        report = report + "\n\nОтчет по кандидатам:\n{cands}".format(cands=report_candidates)
+    task = str(state.get("task") or "")
+    _write_sub_agent_report(report, msgs, task)
     logger.info("node=sub_report_node done tool_calls=%s", len(tool_msgs))
     return {"report": report}
 
@@ -582,7 +720,23 @@ def find_candidates(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Dict[str, Any]:
-    """Delegate candidate search to the sub-agent."""
+    """Назначение:
+        Найти кандидатов по текстовому заданию и вернуть:
+        - выбранные ID кандидатов
+        - краткий отчёт, почему они подходят
+
+        Когда использовать:
+        - пользователь описал задачу “человеческим языком”, и нужно сделать подбор
+        - нужно выполнить поиск + отбор + объяснение
+
+        Вход:
+        - task: текст запроса пользователя (критерии/пожелания)
+
+        Выход:
+        - selected_ids: список ID
+        - report: краткий отчёт по выбору
+
+    """
     iters = int(os.getenv("SUB_AGENT_MAX_ITERS", "50"))
     logger.info("tool=find_candidates start iters=%s task=%r", iters, _short(task))
     # Pass the main chat history as a list of messages (not a formatted string).
@@ -615,13 +769,12 @@ def find_candidates(
     )
     payload = {
         "selected_ids": result.get("selected_ids", []),
-        "candidates": result.get("candidates", []),
         "report": result.get("report", ""),
     }
     logger.info(
         "tool=find_candidates done selected_ids=%s candidates=%s report_len=%s",
         len(payload["selected_ids"] or []),
-        len(payload["candidates"] or []),
+        len(result.get("candidates") or []),
         len(payload["report"] or ""),
     )
     if Command is not None:
@@ -639,8 +792,128 @@ def find_candidates(
 
     return payload
 
+@tool
+def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
+    """Назначение:
+        Получить подробную информацию по кандидатам по их ID.
 
-main_tools = [find_candidates]
+        Когда использовать:
+        - после выбора ID нужно показать/проанализировать детали кандидатов
+        - нужно собрать детальную карточку кандидата для ответа пользователю
+
+        Вход:
+        - candidates_ids: список ID (UUID или строки UUID)
+
+        Выход:
+        - данные по каждому ID (найден/не найден/ошибка)
+    """
+
+    if not candidates_ids:
+        logger.info("get_candidate_by_id tool: candidates_ids were not given")
+        return {"result": "candidates ids were not given"}
+
+    # Преобразуем все ID в строки для запроса
+    str_ids = []
+    for cid in candidates_ids:
+        if isinstance(cid, UUID):
+            str_ids.append(str(cid))
+        elif isinstance(cid, str):
+            try:
+                # Проверяем что строка - валидный UUID
+                UUID(cid)
+                str_ids.append(cid)
+            except ValueError:
+                logger.warning(f"Invalid UUID string: {cid}")
+                continue
+        else:
+            logger.warning(f"Unsupported ID type: {type(cid)}")
+            continue
+
+    if not str_ids:
+        logger.info("get_candidate_by_id tool: no valid IDs provided")
+        return {"result": "no valid UUIDs provided"}
+
+    # Создаем параметры для запроса
+    placeholders = ", ".join([f":id_{i}" for i in range(len(str_ids))])
+    params = {f"id_{i}": cid for i, cid in enumerate(str_ids)}
+
+    query = text(
+        f"""
+        SELECT
+            id::text,
+            date_received,
+            last_name,
+            first_name,
+            middle_name,
+            previous_last_name,
+            sex,
+            birth_date,
+            birth_place,
+            snils,
+            passport_number,
+            passport_issued,
+            phone_mobile,
+            phone_2,
+            phone_3,
+            email_1,
+            email_2,
+            email_upgo,
+            residence_area,
+            appointment_date,
+            dismissal_date,
+            confirmed_experience_years,
+            source_info,
+            education_text,
+            education_count,
+            work_text,
+            extra_info_text
+        FROM candidates
+        WHERE id::text IN ({placeholders})
+    """
+    )
+
+    result = {"result": {}}
+
+    # Инициализируем результат для всех valid ID
+    for cid in str_ids:
+        result["result"][cid] = {
+            "requested_id": cid,
+            "status": "not found",
+            "data": None,
+        }
+
+    try:
+        global engine
+        with engine.connect() as conn:
+            rows = conn.execute(query, params).mappings().all()
+
+        for row in rows:
+            row_dict = dict(row)
+            candidate_id = row_dict["id"]  # уже строка
+
+            # Преобразуем данные в CandidateOut
+            try:
+                candidate_data = CandidateOut(**row_dict).model_dump()
+                candidate_data = _compact_candidate(candidate_data)
+
+                result["result"][candidate_id]["status"] = "found"
+                result["result"][candidate_id]["data"] = candidate_data
+
+                logger.info(f"get_candidate_by_id tool: {candidate_id} was found")
+            except Exception as e:
+                result["result"][candidate_id]["status"] = "error processing data"
+                result["result"][candidate_id]["error"] = str(e)
+                logger.error(f"Error processing candidate {candidate_id}: {e}")
+
+    except Exception as e:
+        # В случае ошибки БД
+        error_msg = str(e)
+        result["error"] = error_msg
+        logger.error(f"get_candidate_by_id tool: database error: {error_msg}")
+
+    return result
+
+main_tools = [find_candidates, get_candidate_by_id]
 main_tool_node = ToolNode(main_tools)
 
 
@@ -689,12 +962,12 @@ def log_first_candidates_on_startup() -> None:
         logger.info("startup db_check candidates_count=%s", len(rows))
         for idx, row in enumerate(rows, start=1):
             logger.info(
-                "startup candidate[%s] id=%s desired_position=%r city=%r expected_salary_rub=%s",
+                "startup candidate[%s] id=%s last_name=%r first_name=%r residence_area=%r",
                 idx,
                 getattr(row, "id", None),
-                getattr(row, "desired_position", None),
-                getattr(row, "city", None),
-                getattr(row, "expected_salary_rub", None),
+                getattr(row, "last_name", None),
+                getattr(row, "first_name", None),
+                getattr(row, "residence_area", None),
             )
     except Exception:
         logger.exception("startup db_check failed")
@@ -774,11 +1047,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
         history.append(ai_msgs[-1])
 
     tool_payload = _extract_find_candidates_payload(all_messages)
-    candidates = tool_payload.get("candidates") if isinstance(tool_payload, dict) else None
+    selected_ids = tool_payload.get("selected_ids") if isinstance(tool_payload, dict) else None
     report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
 
     # Save candidate set history in the session.
-    candidates_list: List[Dict[str, Any]] = candidates if isinstance(candidates, list) else []
+    candidates_list: List[Dict[str, Any]] = []
+    if isinstance(selected_ids, list) and selected_ids:
+        candidates_list = fetch_candidates_by_ids(selected_ids)
     if candidates_list:
         session_data["candidate_sets"].append(candidates_list)
         session_data["candidate_index"] = len(session_data["candidate_sets"]) - 1
@@ -856,5 +1131,5 @@ async def health() -> Dict[str, str]:
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "8010"))
     uvicorn.run(app, host="0.0.0.0", port=port)
