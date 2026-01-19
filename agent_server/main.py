@@ -417,6 +417,7 @@ class SubState(TypedDict, total=False):
     need_user: bool
     user_question: str
     session_id: str
+    cancelled: bool
 
 
 # ------------------------
@@ -562,12 +563,20 @@ def save_candidate_ids(
 
     session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
     if session_id and session_id in SESSIONS:
-        SESSIONS[session_id]["pending_candidate_ids"] = normalized
+        existing = SESSIONS[session_id].get("pending_candidate_ids") or []
+        merged: List[str] = []
+        seen_pending: set[str] = set()
+        for cid in list(existing) + normalized:
+            s = str(cid)
+            if s not in seen_pending:
+                merged.append(s)
+                seen_pending.add(s)
+        SESSIONS[session_id]["pending_candidate_ids"] = merged
         SESSIONS[session_id]["pending_candidates"] = []
         logger.info(
             "tool=save_candidate_ids pending_update session_id=%s candidates=%s",
             session_id,
-            len(normalized),
+            len(merged),
         )
     else:
         logger.info("tool=save_candidate_ids pending_update skipped session_id=%r", session_id)
@@ -598,6 +607,22 @@ def sub_agent_node(state: SubState) -> SubState:
         state.get("iterations_left"),
         len(state.get("messages", []) or []),
     )
+    session_id = state.get("session_id")
+    if _is_cancel_requested(session_id):
+        session_data = SESSIONS.get(session_id) if session_id else None
+        pending_ids = list((session_data or {}).get("pending_candidate_ids") or [])
+        logger.info(
+            "node=sub_agent_node cancel_requested session_id=%s pending_ids=%s",
+            session_id,
+            len(pending_ids),
+        )
+        return {
+            "messages": [AIMessage(content="Поиск остановлен по запросу пользователя.")],
+            "iterations_left": 0,
+            "selected_ids": pending_ids,
+            "cancelled": True,
+            "session_id": session_id,
+        }
     llm_with_tools = llm.bind_tools(sub_tools)
     msgs: List[AnyMessage] = list(state.get("messages", []))
     iters_left = int(state.get("iterations_left", 0))
@@ -633,6 +658,13 @@ def _sub_router(state: SubState) -> Literal["tools", "report"]:
 
 def sub_report_node(state: SubState) -> SubState:
     msgs: List[AnyMessage] = list(state.get("messages", []))
+    if state.get("cancelled"):
+        selected_ids: List[str] = list(state.get("selected_ids", []) or [])
+        report_note = f"Поиск прерван - сохранено {len(selected_ids)} кандидатов."
+        task = str(state.get("task") or "")
+        _write_sub_agent_report(report_note, msgs, task)
+        logger.info("node=sub_report_node cancelled report_len=%s", len(report_note))
+        return {"report": ""}
     # Keep report compact: include only tool usage and selected ids.
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     summary_lines = [
@@ -753,6 +785,8 @@ def find_candidates(
 
     """
     iters = int(os.getenv("SUB_AGENT_MAX_ITERS", "50"))
+    session_id = state.get("session_id")
+    _set_search_in_progress(session_id, True)
     logger.info("tool=find_candidates start iters=%s task=%r", iters, _short(task))
     # Pass the main chat history as a list of messages (not a formatted string).
     # Important: exclude tool-call messages to avoid invalid tool-call/tool-result pairs
@@ -773,19 +807,24 @@ def find_candidates(
         SystemMessage(content=SUB_AGENT_SYSTEM_PROMPT),
         HumanMessage(content=task),
     ]
-    result: SubState = sub_graph.invoke(
-        {
-            "task": task,
-            # Pass the main-agent chat history so clarify_with_main can answer from it.
-            "context": context_msgs,
-            "iterations_left": iters,
-            "messages": init_messages,
-            "session_id": state.get("session_id"),
-        }
-    )
+    try:
+        result: SubState = sub_graph.invoke(
+            {
+                "task": task,
+                # Pass the main-agent chat history so clarify_with_main can answer from it.
+                "context": context_msgs,
+                "iterations_left": iters,
+                "messages": init_messages,
+                "session_id": session_id,
+            }
+        )
+    finally:
+        _set_search_in_progress(session_id, False)
     payload = {
         "selected_ids": result.get("selected_ids", []),
         "report": result.get("report", ""),
+        "candidates": result.get("candidates", []),
+        "cancelled": bool(result.get("cancelled")),
     }
     logger.info(
         "tool=find_candidates done selected_ids=%s candidates=%s report_len=%s",
@@ -999,10 +1038,30 @@ class SessionData(TypedDict):
     candidate_index: int
     pending_candidates: List[Dict[str, Any]]
     pending_candidate_ids: List[str]
+    cancel_requested: bool
+    search_in_progress: bool
 
 
 # session_id -> session data
 SESSIONS: Dict[str, SessionData] = {}
+
+
+def _is_cancel_requested(session_id: Optional[str]) -> bool:
+    if not session_id:
+        return False
+    session_data = SESSIONS.get(session_id)
+    if not session_data:
+        return False
+    return bool(session_data.get("cancel_requested"))
+
+
+def _set_search_in_progress(session_id: Optional[str], value: bool) -> None:
+    if not session_id:
+        return
+    session_data = SESSIONS.get(session_id)
+    if not session_data:
+        return
+    session_data["search_in_progress"] = value
 
 
 class ChatRequest(BaseModel):
@@ -1032,6 +1091,12 @@ class CandidateCurrentResponse(BaseModel):
     pending: bool = False
 
 
+class StopSearchResponse(BaseModel):
+    session_id: str
+    stop_requested: bool
+    message: str = ""
+
+
 def _extract_find_candidates_payload(messages: List[AnyMessage]) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     for msg in messages:
@@ -1046,6 +1111,21 @@ def _extract_find_candidates_payload(messages: List[AnyMessage]) -> Dict[str, An
     return payload
 
 
+def _find_tool_pair(
+    messages: List[AnyMessage], tool_name: str
+) -> tuple[Optional[AIMessage], Optional[ToolMessage]]:
+    last_call: Optional[AIMessage] = None
+    last_result: Optional[ToolMessage] = None
+    for msg in messages:
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            for call in msg.tool_calls:
+                if isinstance(call, dict) and call.get("name") == tool_name:
+                    last_call = msg
+        elif isinstance(msg, ToolMessage) and _tool_name(msg) == tool_name:
+            last_result = msg
+    return last_call, last_result
+
+
 @app.post("/", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
     session_id = req.session_id or str(uuid.uuid4())
@@ -1056,6 +1136,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "candidate_index": -1,
             "pending_candidates": [],
             "pending_candidate_ids": [],
+            "cancel_requested": False,
+            "search_in_progress": False,
         }
 
     session_data = SESSIONS[session_id]
@@ -1074,19 +1156,29 @@ async def chat(req: ChatRequest) -> ChatResponse:
     ai_msgs = [m for m in all_messages if isinstance(m, AIMessage)]
     answer = ai_msgs[-1].content if ai_msgs else ""
 
+    tool_payload = _extract_find_candidates_payload(all_messages)
+    selected_ids = tool_payload.get("selected_ids") if isinstance(tool_payload, dict) else None
+    report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
+    cancelled = bool(tool_payload.get("cancelled")) if isinstance(tool_payload, dict) else False
+
+    if cancelled:
+        tool_call_msg, tool_result_msg = _find_tool_pair(all_messages, "find_candidates")
+        if tool_call_msg and tool_result_msg:
+            history.append(tool_call_msg)
+            history.append(tool_result_msg)
+
     # Persist only the last AI message (keeps session small).
     if ai_msgs:
         history.append(ai_msgs[-1])
 
-    tool_payload = _extract_find_candidates_payload(all_messages)
-    selected_ids = tool_payload.get("selected_ids") if isinstance(tool_payload, dict) else None
-    report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
-
     # Save candidate set history in the session.
     candidates_list: List[Dict[str, Any]] = []
+    payload_candidates = tool_payload.get("candidates") if isinstance(tool_payload, dict) else None
     pending_candidates = session_data.get("pending_candidates") or []
     pending_candidate_ids = session_data.get("pending_candidate_ids") or []
-    if pending_candidates:
+    if isinstance(payload_candidates, list) and payload_candidates:
+        candidates_list = [item for item in payload_candidates if isinstance(item, dict)]
+    elif pending_candidates:
         candidates_list = pending_candidates
     elif isinstance(selected_ids, list) and selected_ids:
         candidates_list = fetch_candidates_by_ids(selected_ids)
@@ -1103,6 +1195,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
     current_candidates: List[Dict[str, Any]] = []
     if 0 <= idx < total:
         current_candidates = session_data["candidate_sets"][idx]
+
+    session_data["cancel_requested"] = False
 
     return ChatResponse(
         session_id=session_id,
@@ -1171,6 +1265,17 @@ async def get_current_candidates(session_id: str) -> CandidateCurrentResponse:
 
     pending_candidates = session_data.get("pending_candidates") or []
     pending_candidate_ids = session_data.get("pending_candidate_ids") or []
+    if session_data.get("search_in_progress"):
+        if pending_candidate_ids and not pending_candidates:
+            pending_candidates = await run_in_threadpool(
+                fetch_candidates_by_ids, pending_candidate_ids
+            )
+            session_data["pending_candidates"] = pending_candidates
+        return CandidateCurrentResponse(
+            session_id=session_id,
+            candidates=pending_candidates,
+            pending=True,
+        )
     if pending_candidate_ids:
         if not pending_candidates:
             pending_candidates = await run_in_threadpool(
@@ -1198,6 +1303,23 @@ async def get_current_candidates(session_id: str) -> CandidateCurrentResponse:
         session_id=session_id,
         candidates=current_candidates,
         pending=False,
+    )
+
+
+@app.post("/session/{session_id}/stop", response_model=StopSearchResponse)
+async def stop_search(session_id: str) -> StopSearchResponse:
+    session_data = SESSIONS.get(session_id)
+    if not session_data:
+        return StopSearchResponse(
+            session_id=session_id,
+            stop_requested=False,
+            message="session not found",
+        )
+    session_data["cancel_requested"] = True
+    return StopSearchResponse(
+        session_id=session_id,
+        stop_requested=True,
+        message="stop requested",
     )
 
 
