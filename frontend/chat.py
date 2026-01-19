@@ -21,6 +21,16 @@ if "stop_requested" not in st.session_state:
 
 st.set_page_config(page_title="SQL-HR", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    [data-testid="stDeployButton"] { display: none; }
+    [data-testid="stMainMenu"] { display: none; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("SQL-HR")
 
 
@@ -37,7 +47,6 @@ def _render_candidates(candidates):
         return
     st.markdown("**Кандидаты:**")
     for candidate in candidates:
-        cand_id = str(candidate.get("id") or "")
         with st.container(border=True):
             full_name = " ".join(
                 [
@@ -52,18 +61,45 @@ def _render_candidates(candidates):
             )
             st.markdown(f"#### {full_name or 'Кандидат'}")
 
-            if cand_id:
-                st.markdown(f"**ID:** `{cand_id}`")
-            if "residence_area" in candidate and candidate.get("residence_area"):
-                st.markdown(f"**Район проживания:** {candidate.get('residence_area')}")
-
+            birth_date = candidate.get("birth_date")
+            if birth_date:
+                st.markdown(f"**Дата рождения:** {birth_date}")
+            phones = [
+                candidate.get("phone_mobile"),
+                candidate.get("phone_2"),
+                candidate.get("phone_3"),
+            ]
+            phones = [p for p in phones if p]
+            if phones:
+                phone_line = phones[0]
+                if len(phones) > 1:
+                    phone_line = f"{phone_line} ({', '.join(phones[1:])})"
+                st.markdown(f"**Телефон:** {phone_line}")
+            emails = [
+                candidate.get("email_1"),
+                candidate.get("email_2"),
+                candidate.get("email_upgo"),
+            ]
+            emails = [e for e in emails if e]
+            if emails:
+                email_line = emails[0]
+                if len(emails) > 1:
+                    email_line = f"{email_line} ({', '.join(emails[1:])})"
+                st.markdown(f"**Почта:** {email_line}")
             with st.expander("Показать остальные поля"):
                 for field, value in candidate.items():
                     if field in (
                         "last_name",
                         "first_name",
                         "middle_name",
-                        "residence_area",
+                        "id",
+                        "birth_date",
+                        "phone_mobile",
+                        "phone_2",
+                        "phone_3",
+                        "email_1",
+                        "email_2",
+                        "email_upgo",
                     ):
                         continue
                     st.markdown(f"**{field}:** {value}")

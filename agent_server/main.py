@@ -43,9 +43,7 @@ from candidates import CandidateORM as C
 from candidates import CandidateOut
 from prompts import (
     MAIN_AGENT_SYSTEM_PROMPT,
-    CANDIDATE_REPORT_PROMPT,
     CLARIFY_WITH_MAIN_SYSTEM_PROMPT,
-    SEARCH_REPORT_PROMPT,
     SUB_AGENT_LAST_TRY_PROMPT,
     SUB_AGENT_SYSTEM_PROMPT,
 )
@@ -430,7 +428,19 @@ def clarify_with_main(
     question: str,
     state: Annotated[dict, InjectedState],
 ) -> Dict[str, Any]:
-    """Короткий вопрос основному агенту для уточнения требований."""
+    """Назначение:
+        Задать уточняющий вопрос основному агенту, если данных не хватает.
+
+        Когда использовать:
+        - критерии поиска неясны (позиция, опыт, локация, зарплата, навыки и т.д.)
+        - пользователь просит “лучших”, но не говорит по каким параметрам
+
+        Вход:
+        - question: что именно нужно уточнить
+
+        Выход:
+        - текст уточняющего вопроса
+    """
 
     logger.info("tool=clarify_with_main start question=%r", _short(question))
     context_msgs = state.get("context")
@@ -556,7 +566,7 @@ def save_candidate_ids(
     return result
 
 
-sub_tools = [clarify_with_main, db_search, save_candidate_ids]
+sub_tools = [db_search, save_candidate_ids]
 sub_tool_node = ToolNode(sub_tools)
 
 
@@ -628,59 +638,62 @@ def sub_report_node(state: SubState) -> SubState:
         task = str(state.get("task") or "")
         _write_sub_agent_report(report_note, msgs, task)
         logger.info("node=sub_report_node cancelled report_len=%s", len(report_note))
-        return {"report": ""}
-    # Keep report compact: include only tool usage and selected ids.
-    tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
-    summary_lines = [
-        f"tool_calls={len(tool_msgs)}",
-        f"iterations_left={state.get('iterations_left')}",
-    ]
-    report_context = "\n".join(summary_lines)
-    report_search = llm.invoke(
-        [
-            SystemMessage(content=SEARCH_REPORT_PROMPT),
-            HumanMessage(content=f"История сообщений:\n{report_context}"),
-        ]
-    ).content
-
-    selected_ids: List[str] = list(state.get("selected_ids", []) or [])
-    report_candidates = ""
-    if selected_ids:
-        candidates = fetch_candidates_by_ids(selected_ids)
-        compact_payload = [
-            {
-                "id": str(c.get("id")),
-                "full_name": " ".join(
-                    [p for p in [c.get("last_name"), c.get("first_name"), c.get("middle_name")] if p]
-                ),
-                "residence_area": c.get("residence_area"),
-                "birth_date": c.get("birth_date"),
-                "education_count": c.get("education_count"),
-                "education_text": _short(str(c.get("education_text") or "")),
-                "work_text": _short(str(c.get("work_text") or "")),
-                "extra_info_text": _short(str(c.get("extra_info_text") or "")),
-            }
-            for c in candidates
-            if isinstance(c, dict)
-        ]
-        task = str(state.get("task") or "")
-        report_candidates = llm.invoke(
-            [
-                SystemMessage(content=CANDIDATE_REPORT_PROMPT),
-                HumanMessage(
-                    content=(
-                        f"Запрос пользователя:\n{task}\n\n"
-                        f"Кандидаты:\n{json.dumps(compact_payload, ensure_ascii=False, default=str)}"
-                    )
-                ),
-            ]
-        ).content
-
-    report = "Отчет по поиску:\n{search}".format(search=report_search)
-    if report_candidates:
-        report = report + "\n\nОтчет по кандидатам:\n{cands}".format(cands=report_candidates)
+        return {"report": "", "cancelled": True}
+    # LLM-based reports are disabled; main agent will interpret tool payloads.
+    # --- previously:
+    # tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
+    # summary_lines = [
+    #     f"tool_calls={len(tool_msgs)}",
+    #     f"iterations_left={state.get('iterations_left')}",
+    # ]
+    # report_context = "\n".join(summary_lines)
+    # report_search = llm.invoke(
+    #     [
+    #         SystemMessage(content=SEARCH_REPORT_PROMPT),
+    #         HumanMessage(content=f"История сообщений:\n{report_context}"),
+    #     ]
+    # ).content
+    #
+    # selected_ids: List[str] = list(state.get("selected_ids", []) or [])
+    # report_candidates = ""
+    # if selected_ids:
+    #     candidates = fetch_candidates_by_ids(selected_ids)
+    #     compact_payload = [
+    #         {
+    #             "id": str(c.get("id")),
+    #             "full_name": " ".join(
+    #                 [p for p in [c.get("last_name"), c.get("first_name"), c.get("middle_name")] if p]
+    #             ),
+    #             "residence_area": c.get("residence_area"),
+    #             "birth_date": c.get("birth_date"),
+    #             "education_count": c.get("education_count"),
+    #             "education_text": _short(str(c.get("education_text") or "")),
+    #             "work_text": _short(str(c.get("work_text") or "")),
+    #             "extra_info_text": _short(str(c.get("extra_info_text") or "")),
+    #         }
+    #         for c in candidates
+    #         if isinstance(c, dict)
+    #     ]
+    #     task = str(state.get("task") or "")
+    #     report_candidates = llm.invoke(
+    #         [
+    #             SystemMessage(content=CANDIDATE_REPORT_PROMPT),
+    #             HumanMessage(
+    #                 content=(
+    #                     f"Запрос пользователя:\n{task}\n\n"
+    #                     f"Кандидаты:\n{json.dumps(compact_payload, ensure_ascii=False, default=str)}"
+    #                 )
+    #             ),
+    #         ]
+    #     ).content
+    #
+    # report = "Отчет по поиску:\n{search}".format(search=report_search)
+    # if report_candidates:
+    #     report = report + "\n\nОтчет по кандидатам:\n{cands}".format(cands=report_candidates)
+    report = ""
     task = str(state.get("task") or "")
     _write_sub_agent_report(report, msgs, task)
+    tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     logger.info("node=sub_report_node done tool_calls=%s", len(tool_msgs))
     return {"report": report}
 
@@ -695,6 +708,7 @@ def sub_result_node(state: SubState) -> SubState:
     result = {
         "selected_ids": ids,
         "candidates": candidates,
+        "cancelled": bool(state.get("cancelled")),
     }
     logger.info(
         "node=sub_result_node done selected_ids=%s candidates=%s",
@@ -759,7 +773,7 @@ def find_candidates(
         result: SubState = sub_graph.invoke(
             {
                 "task": task,
-                # Pass the main-agent chat history so clarify_with_main can answer from it.
+                # Pass the main-agent chat history for sub-agent context.
                 "context": context_msgs,
                 "iterations_left": iters,
                 "messages": init_messages,
@@ -927,12 +941,31 @@ def _main_router(state: MainState) -> Literal["tools", "end"]:
     return "end"
 
 
+def _main_after_tools_router(state: MainState) -> Literal["agent", "end"]:
+    msgs = state.get("messages", [])
+    session_id = state.get("session_id")
+    if _is_cancel_requested(session_id):
+        logger.info("node=_main_after_tools_router route=end cancel_requested=true")
+        return "end"
+    cancelled = False
+    for msg in reversed(msgs):
+        if isinstance(msg, ToolMessage) and _tool_name(msg) == "find_candidates":
+            payload = _parse_tool_payload(msg.content)
+            cancelled = bool(payload.get("cancelled")) if isinstance(payload, dict) else False
+            break
+    if cancelled:
+        logger.info("node=_main_after_tools_router route=end cancelled=true")
+        return "end"
+    logger.info("node=_main_after_tools_router route=agent")
+    return "agent"
+
+
 main_workflow = StateGraph(MainState)
 main_workflow.add_node("agent", main_agent_node)
 main_workflow.add_node("tools", main_tool_node)
 main_workflow.set_entry_point("agent")
 main_workflow.add_conditional_edges("agent", _main_router, {"tools": "tools", "end": END})
-main_workflow.add_edge("tools", "agent")
+main_workflow.add_conditional_edges("tools", _main_after_tools_router, {"agent": "agent", "end": END})
 graph_app = main_workflow.compile()
 
 
@@ -1102,9 +1135,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
         if tool_call_msg and tool_result_msg:
             history.append(tool_call_msg)
             history.append(tool_result_msg)
+        answer = ""
 
     # Persist only the last AI message (keeps session small).
-    if ai_msgs:
+    if ai_msgs and not cancelled:
         history.append(ai_msgs[-1])
 
     # Save candidate set history in the session.
@@ -1128,16 +1162,16 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     idx = int(session_data.get("candidate_index", -1))
     total = len(session_data.get("candidate_sets", []))
-    current_candidates: List[Dict[str, Any]] = []
-    if 0 <= idx < total:
-        current_candidates = session_data["candidate_sets"][idx]
+    response_candidates: List[Dict[str, Any]] = []
+    if candidates_list:
+        response_candidates = candidates_list
 
     session_data["cancel_requested"] = False
 
     return ChatResponse(
         session_id=session_id,
         answer=answer,
-        candidates=current_candidates,
+        candidates=response_candidates,
         candidates_index=idx,
         candidates_total=total,
         report=report if isinstance(report, str) else "",
@@ -1230,14 +1264,9 @@ async def get_current_candidates(session_id: str) -> CandidateCurrentResponse:
             pending=True,
         )
 
-    sets = session_data.get("candidate_sets", [])
-    idx = int(session_data.get("candidate_index", -1))
-    current_candidates: List[Dict[str, Any]] = []
-    if 0 <= idx < len(sets):
-        current_candidates = sets[idx]
     return CandidateCurrentResponse(
         session_id=session_id,
-        candidates=current_candidates,
+        candidates=[],
         pending=False,
     )
 
