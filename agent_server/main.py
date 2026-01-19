@@ -6,10 +6,12 @@ import logging
 import os
 import uuid
 from datetime import date, datetime
+from contextvars import ContextVar
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict, Union
 from uuid import UUID
 
 from fastapi import FastAPI
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, create_engine, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -50,6 +52,8 @@ from prompts import (
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
+
+CURRENT_SESSION_ID: ContextVar[Optional[str]] = ContextVar("CURRENT_SESSION_ID", default=None)
 
 SUB_AGENT_REPORT_DIR = os.getenv("SUB_AGENT_REPORT_DIR", "result")
 SUB_AGENT_REPORT_FILE = os.getenv(
@@ -398,6 +402,7 @@ def add_unique_ids(left: List[str], right: List[str]) -> List[str]:
 
 class MainState(TypedDict):
     messages: Annotated[List[AnyMessage], add_messages]
+    session_id: str
 
 
 class SubState(TypedDict, total=False):
@@ -411,6 +416,7 @@ class SubState(TypedDict, total=False):
     candidates: List[Dict[str, Any]]
     need_user: bool
     user_question: str
+    session_id: str
 
 
 # ------------------------
@@ -527,6 +533,7 @@ def db_search(
 @tool
 def save_candidate_ids(
     ids: List[str],
+    state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
     """Назначение:
@@ -552,6 +559,18 @@ def save_candidate_ids(
             seen.add(s)
     result = {"saved": normalized, "saved_count": len(normalized)}
     logger.info("tool=save_candidate_ids done saved_count=%s", result["saved_count"])
+
+    session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
+    if session_id and session_id in SESSIONS:
+        SESSIONS[session_id]["pending_candidate_ids"] = normalized
+        SESSIONS[session_id]["pending_candidates"] = []
+        logger.info(
+            "tool=save_candidate_ids pending_update session_id=%s candidates=%s",
+            session_id,
+            len(normalized),
+        )
+    else:
+        logger.info("tool=save_candidate_ids pending_update skipped session_id=%r", session_id)
 
     if Command is not None:
         return Command(
@@ -590,6 +609,7 @@ def sub_agent_node(state: SubState) -> SubState:
     next_state = {
         "messages": [response],
         "iterations_left": int(state.get("iterations_left", 0)) - 1,
+        "session_id": state.get("session_id"),
     }
     logger.info(
         "node=sub_agent_node done iterations_left=%s tool_calls=%s",
@@ -673,11 +693,6 @@ def sub_result_node(state: SubState) -> SubState:
     """Build the final result for the main agent using State-only data."""
     max_candidates = max(1, int(os.getenv("SUB_AGENT_MAX_CANDIDATES", "5")))
     ids: List[str] = list(state.get("selected_ids", []) or [])
-    last_pool: List[str] = list(state.get("last_pool", []) or [])
-
-    # Fallback: if the agent never saved ids, take ids from the last db_search.
-    if not ids and last_pool:
-        ids = last_pool[:max_candidates]
 
     ids = ids[:max_candidates]
     candidates = fetch_candidates_by_ids(ids)
@@ -765,6 +780,7 @@ def find_candidates(
             "context": context_msgs,
             "iterations_left": iters,
             "messages": init_messages,
+            "session_id": state.get("session_id"),
         }
     )
     payload = {
@@ -921,7 +937,7 @@ def main_agent_node(state: MainState) -> MainState:
     logger.info("node=main_agent_node start messages=%s", len(state.get("messages", []) or []))
     llm_with_tools = llm.bind_tools(main_tools)
     response = llm_with_tools.invoke(state["messages"])
-    next_state = {"messages": [response]}
+    next_state = {"messages": [response], "session_id": state.get("session_id")}
     logger.info("node=main_agent_node done tool_calls=%s", bool(getattr(response, "tool_calls", None)))
     return next_state
 
@@ -981,6 +997,8 @@ class SessionData(TypedDict):
     messages: List[AnyMessage]
     candidate_sets: List[List[Dict[str, Any]]]
     candidate_index: int
+    pending_candidates: List[Dict[str, Any]]
+    pending_candidate_ids: List[str]
 
 
 # session_id -> session data
@@ -1008,6 +1026,12 @@ class CandidateSetsResponse(BaseModel):
     candidates_total: int = 0
 
 
+class CandidateCurrentResponse(BaseModel):
+    session_id: str
+    candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    pending: bool = False
+
+
 def _extract_find_candidates_payload(messages: List[AnyMessage]) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     for msg in messages:
@@ -1030,13 +1054,21 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "messages": [SystemMessage(content=MAIN_AGENT_SYSTEM_PROMPT)],
             "candidate_sets": [],
             "candidate_index": -1,
+            "pending_candidates": [],
+            "pending_candidate_ids": [],
         }
 
     session_data = SESSIONS[session_id]
     history = session_data["messages"]
     history.append(HumanMessage(content=req.message))
 
-    state: MainState = graph_app.invoke({"messages": history})
+    token = CURRENT_SESSION_ID.set(session_id)
+    try:
+        state: MainState = await run_in_threadpool(
+            graph_app.invoke, {"messages": history, "session_id": session_id}
+        )
+    finally:
+        CURRENT_SESSION_ID.reset(token)
     all_messages = state["messages"]
 
     ai_msgs = [m for m in all_messages if isinstance(m, AIMessage)]
@@ -1052,11 +1084,19 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     # Save candidate set history in the session.
     candidates_list: List[Dict[str, Any]] = []
-    if isinstance(selected_ids, list) and selected_ids:
+    pending_candidates = session_data.get("pending_candidates") or []
+    pending_candidate_ids = session_data.get("pending_candidate_ids") or []
+    if pending_candidates:
+        candidates_list = pending_candidates
+    elif isinstance(selected_ids, list) and selected_ids:
         candidates_list = fetch_candidates_by_ids(selected_ids)
     if candidates_list:
         session_data["candidate_sets"].append(candidates_list)
         session_data["candidate_index"] = len(session_data["candidate_sets"]) - 1
+    if pending_candidates:
+        session_data["pending_candidates"] = []
+    if pending_candidate_ids:
+        session_data["pending_candidate_ids"] = []
 
     idx = int(session_data.get("candidate_index", -1))
     total = len(session_data.get("candidate_sets", []))
@@ -1120,6 +1160,44 @@ async def get_candidates_set(
         candidates=sets[idx],
         candidates_index=idx,
         candidates_total=total,
+    )
+
+
+@app.get("/session/{session_id}/candidates/current", response_model=CandidateCurrentResponse)
+async def get_current_candidates(session_id: str) -> CandidateCurrentResponse:
+    session_data = SESSIONS.get(session_id)
+    if not session_data:
+        return CandidateCurrentResponse(session_id=session_id, candidates=[], pending=False)
+
+    pending_candidates = session_data.get("pending_candidates") or []
+    pending_candidate_ids = session_data.get("pending_candidate_ids") or []
+    if pending_candidate_ids:
+        if not pending_candidates:
+            pending_candidates = await run_in_threadpool(
+                fetch_candidates_by_ids, pending_candidate_ids
+            )
+            session_data["pending_candidates"] = pending_candidates
+        return CandidateCurrentResponse(
+            session_id=session_id,
+            candidates=pending_candidates,
+            pending=True,
+        )
+    if pending_candidates:
+        return CandidateCurrentResponse(
+            session_id=session_id,
+            candidates=pending_candidates,
+            pending=True,
+        )
+
+    sets = session_data.get("candidate_sets", [])
+    idx = int(session_data.get("candidate_index", -1))
+    current_candidates: List[Dict[str, Any]] = []
+    if 0 <= idx < len(sets):
+        current_candidates = sets[idx]
+    return CandidateCurrentResponse(
+        session_id=session_id,
+        candidates=current_candidates,
+        pending=False,
     )
 
 
