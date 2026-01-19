@@ -256,7 +256,7 @@ class QuerySpec(BaseModel):
         ),
     )
     limit: int = Field(
-        5,
+        10,
         ge=5,
         le=100,
         description="Сколько строк вернуть в рамках одного запроса к БД.",
@@ -430,19 +430,7 @@ def clarify_with_main(
     question: str,
     state: Annotated[dict, InjectedState],
 ) -> Dict[str, Any]:
-    """Назначение:
-        Задать уточняющий вопрос основному агенту, если данных не хватает.
-
-        Когда использовать:
-        - критерии поиска неясны (позиция, опыт, локация, зарплата, навыки и т.д.)
-        - пользователь просит “лучших”, но не говорит по каким параметрам
-
-        Вход:
-        - question: что именно нужно уточнить
-
-        Выход:
-        - текст уточняющего вопроса
-    """
+    """Короткий вопрос основному агенту для уточнения требований."""
 
     logger.info("tool=clarify_with_main start question=%r", _short(question))
     context_msgs = state.get("context")
@@ -473,19 +461,7 @@ def db_search(
     spec: QuerySpec,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Назначение:
-        Найти кандидатов в базе по заданным фильтрам (QuerySpec).
-
-        Когда использовать:
-        - нужно получить список подходящих кандидатов по критериям
-        - нужно быстро посмотреть варианты и выбрать ID
-
-        Вход:
-        - spec (QuerySpec): фильтры поиска (ключевые слова, поля, лимит и т.п.)
-
-        Выход:
-        - список найденных кандидатов (кратко) + общее число совпадений
- """
+    """Поиск кандидатов по QuerySpec, возвращает список и count."""
     logger.info(
         "tool=db_search start keywords_any=%s keywords_all=%s keywords_not=%s limit=%s",
         len(spec.keywords_any or []),
@@ -537,19 +513,7 @@ def save_candidate_ids(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Назначение:
-        Сохранить выбранные ID кандидатов для последующих шагов.
-
-        Когда использовать:
-        - ты отобрал кандидатов и хочешь зафиксировать их ID
-        - дальше нужно получить подробности по этим кандидатам
-
-        Вход:
-        - ids: список ID кандидатов
-
-        Выход:
-        - подтверждение сохранения списка ID
-"""
+    """Сохранить выбранные ID кандидатов."""
     logger.info("tool=save_candidate_ids start ids_count=%s", len(ids or []))
     normalized: List[str] = []
     seen: set[str] = set()
@@ -767,24 +731,8 @@ def find_candidates(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Dict[str, Any]:
-    """Назначение:
-        Найти кандидатов по текстовому заданию и вернуть:
-        - выбранные ID кандидатов
-        - краткий отчёт, почему они подходят
-
-        Когда использовать:
-        - пользователь описал задачу “человеческим языком”, и нужно сделать подбор
-        - нужно выполнить поиск + отбор + объяснение
-
-        Вход:
-        - task: текст запроса пользователя (критерии/пожелания)
-
-        Выход:
-        - selected_ids: список ID
-        - report: краткий отчёт по выбору
-
-    """
-    iters = int(os.getenv("SUB_AGENT_MAX_ITERS", "50"))
+    """Подбор кандидатов по текстовому запросу, возвращает IDs и отчет."""
+    iters = int(os.getenv("SUB_AGENT_MAX_ITERS", "12"))
     session_id = state.get("session_id")
     _set_search_in_progress(session_id, True)
     logger.info("tool=find_candidates start iters=%s task=%r", iters, _short(task))
@@ -793,7 +741,7 @@ def find_candidates(
     # when this history is later used in an independent LLM call.
     context_msgs: List[AnyMessage] = []
     main_msgs = state.get("messages") or []
-    for m in main_msgs[-24:]:
+    for m in main_msgs[-10:]:
         if isinstance(m, HumanMessage):
             context_msgs.append(m)
         elif isinstance(m, AIMessage):
@@ -849,19 +797,7 @@ def find_candidates(
 
 @tool
 def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
-    """Назначение:
-        Получить подробную информацию по кандидатам по их ID.
-
-        Когда использовать:
-        - после выбора ID нужно показать/проанализировать детали кандидатов
-        - нужно собрать детальную карточку кандидата для ответа пользователю
-
-        Вход:
-        - candidates_ids: список ID (UUID или строки UUID)
-
-        Выход:
-        - данные по каждому ID (найден/не найден/ошибка)
-    """
+    """Детали кандидатов по списку ID."""
 
     if not candidates_ids:
         logger.info("get_candidate_by_id tool: candidates_ids were not given")
