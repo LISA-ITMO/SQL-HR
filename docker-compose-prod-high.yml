@@ -23,11 +23,13 @@ services:
       - "8001"
 
       - --threads
-      - ${LLAMA_THREADS:-12}
+      - ${LLAMA_THREADS:-16}
       - --ctx-size
-      - ${LLAMA_CTX:-12000}
+      - ${LLAMA_CTX:-8192}
       - --batch-size
-      - ${LLAMA_BATCH:-512}
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
       - --jinja
 
     ports:

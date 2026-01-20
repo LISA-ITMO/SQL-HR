@@ -121,6 +121,105 @@ def _tool_name(msg: AnyMessage) -> str:
     return ""
 
 
+def _should_compact_tool_messages(messages: List[AnyMessage]) -> bool:
+    for msg in messages:
+        if isinstance(msg, ToolMessage) and _tool_name(msg) == "save_candidate_ids":
+            return True
+    return False
+
+
+def _compact_candidate_refs(items: Any) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        cid = None
+        if isinstance(item, dict):
+            cid = item.get("id")
+        elif isinstance(item, str):
+            cid = item
+        if cid:
+            out.append({"id": str(cid), "saved_in_db": True})
+    return out
+
+
+def _extract_saved_info(messages: List[AnyMessage]) -> Dict[str, Dict[str, Any]]:
+    saved: Dict[str, Dict[str, Any]] = {}
+    for msg in messages:
+        if not isinstance(msg, ToolMessage) or _tool_name(msg) != "save_candidate_ids":
+            continue
+        payload = _parse_tool_payload(msg.content)
+        if not isinstance(payload, dict):
+            continue
+        for item in payload.get("saved") or []:
+            cid = None
+            info: Dict[str, Any] = {}
+            if isinstance(item, dict):
+                cid = item.get("id")
+                if item.get("full_name"):
+                    info["full_name"] = item.get("full_name")
+                if item.get("summary"):
+                    info["summary"] = item.get("summary")
+            else:
+                cid = item
+            if cid:
+                info["id"] = str(cid)
+                saved[str(cid)] = info
+    return saved
+
+
+def _compact_tool_payload(
+    payload: Any, saved_info: Dict[str, Dict[str, Any]], tool_name: str
+) -> tuple[Any, bool]:
+    if not isinstance(payload, dict):
+        return payload, False
+    changed = False
+    updated = dict(payload)
+    if tool_name == "db_search" and isinstance(payload.get("candidates"), list):
+        candidates = []
+        for item in payload.get("candidates") or []:
+            if isinstance(item, dict):
+                cid = item.get("id")
+                if cid and str(cid) in saved_info:
+                    candidates.append({"id": str(cid), "saved_in_db": True})
+                    changed = True
+                    continue
+            candidates.append(item)
+        updated["candidates"] = candidates
+    return updated, changed
+
+
+def _compact_tool_messages_in_place(messages: List[AnyMessage]) -> None:
+    saved_info = _extract_saved_info(messages)
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        tool_name = _tool_name(msg)
+        payload = _parse_tool_payload(msg.content)
+        compacted, changed = _compact_tool_payload(payload, saved_info, tool_name)
+        if changed:
+            msg.content = json.dumps(compacted, ensure_ascii=False, default=str)
+
+
+def _candidate_full_name(candidate: Dict[str, Any]) -> str:
+    parts = [candidate.get("last_name"), candidate.get("first_name"), candidate.get("middle_name")]
+    return " ".join([p for p in parts if p])
+
+
+def _is_compact_candidate(candidate: Any) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    allowed = {"id", "full_name", "summary", "saved_in_db"}
+    keys = set(candidate.keys())
+    return bool(keys) and keys.issubset(allowed)
+
+
+def _are_compact_candidates(candidates: Any) -> bool:
+    if not isinstance(candidates, list) or not candidates:
+        return False
+    return all(_is_compact_candidate(item) for item in candidates if isinstance(item, dict))
+
+
 # ------------------------
 # Infrastructure (DB + LLM)
 # ------------------------
@@ -254,9 +353,9 @@ class QuerySpec(BaseModel):
         ),
     )
     limit: int = Field(
-        10,
-        ge=5,
-        le=100,
+        5,
+        ge=1,
+        le=5,
         description="Сколько строк вернуть в рамках одного запроса к БД.",
     )
 
@@ -342,7 +441,7 @@ def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
         stmt = stmt.where(and_(*clauses))
     if int(spec.offset or 0) > 0:
         stmt = stmt.offset(int(spec.offset))
-    stmt = stmt.limit(int(spec.limit or 5))
+    stmt = stmt.limit(min(int(spec.limit or 5), 5))
 
     rows = session.scalars(stmt).all()
     return [CandidateOut.model_validate(r) for r in rows]
@@ -384,7 +483,10 @@ def fetch_candidates_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
 
 
 def add_messages(left: List[AnyMessage], right: List[AnyMessage]) -> List[AnyMessage]:
-    return left + right
+    out = left + right
+    if _should_compact_tool_messages(out):
+        _compact_tool_messages_in_place(out)
+    return out
 
 
 def add_unique_ids(left: List[str], right: List[str]) -> List[str]:
@@ -398,6 +500,29 @@ def add_unique_ids(left: List[str], right: List[str]) -> List[str]:
     return out
 
 
+def add_unique_candidates(
+    left: List[Dict[str, Any]], right: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = list(left)
+    index_by_id: Dict[str, int] = {}
+    for idx, item in enumerate(out):
+        cid = item.get("id") if isinstance(item, dict) else None
+        if cid:
+            index_by_id[str(cid)] = idx
+    for item in right:
+        if not isinstance(item, dict):
+            continue
+        cid = item.get("id")
+        if cid:
+            key = str(cid)
+            if key in index_by_id:
+                out[index_by_id[key]] = item
+                continue
+            index_by_id[key] = len(out)
+        out.append(item)
+    return out
+
+
 class MainState(TypedDict):
     messages: Annotated[List[AnyMessage], add_messages]
     session_id: str
@@ -408,10 +533,9 @@ class SubState(TypedDict, total=False):
     context: List[AnyMessage]
     iterations_left: int
     messages: Annotated[List[AnyMessage], add_messages]
-    selected_ids: Annotated[List[str], add_unique_ids]
     last_pool: List[str]
     report: str
-    candidates: List[Dict[str, Any]]
+    candidates: Annotated[List[Dict[str, Any]], add_unique_candidates]
     need_user: bool
     user_question: str
     session_id: str
@@ -421,6 +545,12 @@ class SubState(TypedDict, total=False):
 # ------------------------
 # Sub-agent tools (exactly 3)
 # ------------------------
+
+
+class SavedCandidateSummary(BaseModel):
+    id: str
+    full_name: Optional[str] = None
+    summary: Optional[str] = None
 
 
 @tool
@@ -510,7 +640,13 @@ def db_search(
         return Command(
             update={
                 "last_pool": last_pool,
-                "messages": [ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tool_call_id)],
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False),
+                        tool_call_id=tool_call_id,
+                        name="db_search",
+                    )
+                ],
             }
         )
 
@@ -519,20 +655,28 @@ def db_search(
 
 @tool
 def save_candidate_ids(
-    ids: List[str],
+    candidates: List[SavedCandidateSummary],
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Сохранить выбранные ID кандидатов."""
-    logger.info("tool=save_candidate_ids start ids_count=%s", len(ids or []))
+    """Сохранить выбранные ID кандидатов (с кратким описанием, если доступно)."""
+    logger.info("tool=save_candidate_ids start ids_count=%s", len(candidates or []))
     normalized: List[str] = []
     seen: set[str] = set()
-    for cid in ids or []:
-        s = str(cid)
-        if s not in seen:
-            normalized.append(s)
-            seen.add(s)
-    result = {"saved": normalized, "saved_count": len(normalized)}
+    saved_info: Dict[str, Dict[str, Any]] = {}
+    for item in candidates or []:
+        cid = str(item.id)
+        saved_entry: Dict[str, Any] = {"id": cid}
+        if item.full_name:
+            saved_entry["full_name"] = item.full_name
+        if item.summary:
+            saved_entry["summary"] = item.summary
+        saved_info[cid] = saved_entry
+        if cid not in seen:
+            normalized.append(cid)
+            seen.add(cid)
+    saved_payload = [saved_info[cid] for cid in normalized]
+    result = {"saved": saved_payload, "saved_count": len(saved_payload)}
     logger.info("tool=save_candidate_ids done saved_count=%s", result["saved_count"])
 
     session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
@@ -556,10 +700,17 @@ def save_candidate_ids(
         logger.info("tool=save_candidate_ids pending_update skipped session_id=%r", session_id)
 
     if Command is not None:
+        selected_candidates = fetch_candidates_by_ids(normalized) if normalized else []
         return Command(
             update={
-                "selected_ids": normalized,
-                "messages": [ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tool_call_id)],
+                "candidates": selected_candidates,
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False),
+                        tool_call_id=tool_call_id,
+                        name="save_candidate_ids",
+                    )
+                ],
             }
         )
 
@@ -585,6 +736,7 @@ def sub_agent_node(state: SubState) -> SubState:
     if _is_cancel_requested(session_id):
         session_data = SESSIONS.get(session_id) if session_id else None
         pending_ids = list((session_data or {}).get("pending_candidate_ids") or [])
+        pending_candidates = fetch_candidates_by_ids(pending_ids) if pending_ids else []
         logger.info(
             "node=sub_agent_node cancel_requested session_id=%s pending_ids=%s",
             session_id,
@@ -593,7 +745,7 @@ def sub_agent_node(state: SubState) -> SubState:
         return {
             "messages": [AIMessage(content="Поиск остановлен по запросу пользователя.")],
             "iterations_left": 0,
-            "selected_ids": pending_ids,
+            "candidates": pending_candidates,
             "cancelled": True,
             "session_id": session_id,
         }
@@ -633,8 +785,8 @@ def _sub_router(state: SubState) -> Literal["tools", "report"]:
 def sub_report_node(state: SubState) -> SubState:
     msgs: List[AnyMessage] = list(state.get("messages", []))
     if state.get("cancelled"):
-        selected_ids: List[str] = list(state.get("selected_ids", []) or [])
-        report_note = f"Поиск прерван - сохранено {len(selected_ids)} кандидатов."
+        candidates: List[Dict[str, Any]] = list(state.get("candidates", []) or [])
+        report_note = f"Поиск прерван - сохранено {len(candidates)} кандидатов."
         task = str(state.get("task") or "")
         _write_sub_agent_report(report_note, msgs, task)
         logger.info("node=sub_report_node cancelled report_len=%s", len(report_note))
@@ -701,18 +853,14 @@ def sub_report_node(state: SubState) -> SubState:
 def sub_result_node(state: SubState) -> SubState:
     """Build the final result for the main agent using State-only data."""
     max_candidates = max(1, int(os.getenv("SUB_AGENT_MAX_CANDIDATES", "5")))
-    ids: List[str] = list(state.get("selected_ids", []) or [])
-
-    ids = ids[:max_candidates]
-    candidates = fetch_candidates_by_ids(ids)
+    candidates: List[Dict[str, Any]] = list(state.get("candidates", []) or [])
+    candidates = candidates[:max_candidates]
     result = {
-        "selected_ids": ids,
         "candidates": candidates,
         "cancelled": bool(state.get("cancelled")),
     }
     logger.info(
-        "node=sub_result_node done selected_ids=%s candidates=%s",
-        len(result["selected_ids"]),
+        "node=sub_result_node done candidates=%s",
         len(result["candidates"]),
     )
     return result
@@ -783,15 +931,40 @@ def find_candidates(
     finally:
         _set_search_in_progress(session_id, False)
     payload = {
-        "selected_ids": result.get("selected_ids", []),
         "report": result.get("report", ""),
-        "candidates": result.get("candidates", []),
+        "candidates": [],
         "cancelled": bool(result.get("cancelled")),
     }
+    full_candidates = result.get("candidates", [])
+    saved_info = _extract_saved_info(result.get("messages") or [])
+    compact_candidates: List[Dict[str, Any]] = []
+    if isinstance(full_candidates, list):
+        for candidate in full_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            cid = candidate.get("id")
+            if cid and str(cid) in saved_info:
+                compact = dict(saved_info[str(cid)])
+                if "full_name" not in compact:
+                    full_name = _candidate_full_name(candidate)
+                    if full_name:
+                        compact["full_name"] = full_name
+                compact_candidates.append(compact)
+                continue
+            compact = {"id": str(cid)} if cid else {}
+            full_name = _candidate_full_name(candidate)
+            if full_name:
+                compact["full_name"] = full_name
+            if compact:
+                compact_candidates.append(compact)
+    payload["candidates"] = compact_candidates
+    if session_id and session_id in SESSIONS and isinstance(full_candidates, list):
+        SESSIONS[session_id]["pending_candidates"] = full_candidates
+        pending_ids = [str(item.get("id")) for item in full_candidates if isinstance(item, dict) and item.get("id")]
+        SESSIONS[session_id]["pending_candidate_ids"] = pending_ids
     logger.info(
-        "tool=find_candidates done selected_ids=%s candidates=%s report_len=%s",
-        len(payload["selected_ids"] or []),
-        len(result.get("candidates") or []),
+        "tool=find_candidates done candidates=%s report_len=%s",
+        len(payload.get("candidates") or []),
         len(payload["report"] or ""),
     )
     if Command is not None:
@@ -1126,7 +1299,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
     answer = ai_msgs[-1].content if ai_msgs else ""
 
     tool_payload = _extract_find_candidates_payload(all_messages)
-    selected_ids = tool_payload.get("selected_ids") if isinstance(tool_payload, dict) else None
     report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
     cancelled = bool(tool_payload.get("cancelled")) if isinstance(tool_payload, dict) else False
 
@@ -1147,11 +1319,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
     pending_candidates = session_data.get("pending_candidates") or []
     pending_candidate_ids = session_data.get("pending_candidate_ids") or []
     if isinstance(payload_candidates, list) and payload_candidates:
-        candidates_list = [item for item in payload_candidates if isinstance(item, dict)]
+        if _are_compact_candidates(payload_candidates) and pending_candidates:
+            candidates_list = pending_candidates
+        else:
+            candidates_list = [item for item in payload_candidates if isinstance(item, dict)]
     elif pending_candidates:
         candidates_list = pending_candidates
-    elif isinstance(selected_ids, list) and selected_ids:
-        candidates_list = fetch_candidates_by_ids(selected_ids)
     if candidates_list:
         session_data["candidate_sets"].append(candidates_list)
         session_data["candidate_index"] = len(session_data["candidate_sets"]) - 1

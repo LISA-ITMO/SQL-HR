@@ -38,6 +38,14 @@ services:
       - 0.0.0.0
       - --port
       - "8001"
+      - --threads
+      - ${LLAMA_THREADS:-16}
+      - --ctx-size
+      - ${LLAMA_CTX:-8192}
+      - --batch-size
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
       - --offline
     ports:
       - "${LLAMA_HOST_PORT:-18001}:8001"
