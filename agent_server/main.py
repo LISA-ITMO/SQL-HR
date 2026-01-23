@@ -45,7 +45,6 @@ from candidates import CandidateORM as C
 from candidates import CandidateOut
 from prompts import (
     MAIN_AGENT_SYSTEM_PROMPT,
-    CLARIFY_WITH_MAIN_SYSTEM_PROMPT,
     SUB_AGENT_LAST_TRY_PROMPT,
     SUB_AGENT_SYSTEM_PROMPT,
 )
@@ -183,83 +182,7 @@ def _tool_name(msg: AnyMessage) -> str:
 
 
 def _should_compact_tool_messages(messages: List[AnyMessage]) -> bool:
-    for msg in messages:
-        if isinstance(msg, ToolMessage) and _tool_name(msg) == "save_candidate_ids":
-            return True
     return False
-
-
-def _compact_candidate_refs(items: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if not isinstance(items, list):
-        return out
-    for item in items:
-        cid = None
-        if isinstance(item, dict):
-            cid = item.get("id")
-        elif isinstance(item, str):
-            cid = item
-        if cid:
-            out.append({"id": str(cid), "saved_in_db": True})
-    return out
-
-
-def _extract_saved_info(messages: List[AnyMessage]) -> Dict[str, Dict[str, Any]]:
-    saved: Dict[str, Dict[str, Any]] = {}
-    for msg in messages:
-        if not isinstance(msg, ToolMessage) or _tool_name(msg) != "save_candidate_ids":
-            continue
-        payload = _parse_tool_payload(msg.content)
-        if not isinstance(payload, dict):
-            continue
-        for item in payload.get("saved") or []:
-            cid = None
-            info: Dict[str, Any] = {}
-            if isinstance(item, dict):
-                cid = item.get("id")
-                if item.get("full_name"):
-                    info["full_name"] = item.get("full_name")
-                if item.get("summary"):
-                    info["summary"] = item.get("summary")
-            else:
-                cid = item
-            if cid:
-                info["id"] = str(cid)
-                saved[str(cid)] = info
-    return saved
-
-
-def _compact_tool_payload(
-    payload: Any, saved_info: Dict[str, Dict[str, Any]], tool_name: str
-) -> tuple[Any, bool]:
-    if not isinstance(payload, dict):
-        return payload, False
-    changed = False
-    updated = dict(payload)
-    if tool_name == "db_search" and isinstance(payload.get("candidates"), list):
-        candidates = []
-        for item in payload.get("candidates") or []:
-            if isinstance(item, dict):
-                cid = item.get("id")
-                if cid and str(cid) in saved_info:
-                    candidates.append({"id": str(cid), "saved_in_db": True})
-                    changed = True
-                    continue
-            candidates.append(item)
-        updated["candidates"] = candidates
-    return updated, changed
-
-
-def _compact_tool_messages_in_place(messages: List[AnyMessage]) -> None:
-    saved_info = _extract_saved_info(messages)
-    for msg in messages:
-        if not isinstance(msg, ToolMessage):
-            continue
-        tool_name = _tool_name(msg)
-        payload = _parse_tool_payload(msg.content)
-        compacted, changed = _compact_tool_payload(payload, saved_info, tool_name)
-        if changed:
-            msg.content = json.dumps(compacted, ensure_ascii=False, default=str)
 
 
 def _candidate_full_name(candidate: Dict[str, Any]) -> str:
@@ -410,14 +333,8 @@ class QuerySpec(BaseModel):
         ge=0,
         description=(
             "Сколько строк пропустить (pagination). "
-            "Назначай только если предыдущий такой же запрос вернул максимум (limit)."
+            "Назначай только если предыдущий такой же запрос вернул максимум (5)."
         ),
-    )
-    limit: int = Field(
-        5,
-        ge=1,
-        le=5,
-        description="Сколько строк вернуть в рамках одного запроса к БД.",
     )
 
 
@@ -502,7 +419,7 @@ def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
         stmt = stmt.where(and_(*clauses))
     if int(spec.offset or 0) > 0:
         stmt = stmt.offset(int(spec.offset))
-    stmt = stmt.limit(min(int(spec.limit or 5), 5))
+    stmt = stmt.limit(5)
 
     rows = session.scalars(stmt).all()
     return [CandidateOut.model_validate(r) for r in rows]
@@ -545,8 +462,6 @@ def fetch_candidates_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
 
 def add_messages(left: List[AnyMessage], right: List[AnyMessage]) -> List[AnyMessage]:
     out = left + right
-    if _should_compact_tool_messages(out):
-        _compact_tool_messages_in_place(out)
     return out
 
 
@@ -594,7 +509,6 @@ class SubState(TypedDict, total=False):
     context: List[AnyMessage]
     iterations_left: int
     messages: Annotated[List[AnyMessage], add_messages]
-    last_pool: List[str]
     report: str
     candidates: Annotated[List[Dict[str, Any]], add_unique_candidates]
     need_user: bool
@@ -604,132 +518,113 @@ class SubState(TypedDict, total=False):
 
 
 # ------------------------
-# Sub-agent tools (exactly 3)
+# Sub-agent tools
 # ------------------------
-
-
-class SavedCandidateSummary(BaseModel):
-    id: str
-    full_name: Optional[str] = None
-    summary: Optional[str] = None
-
-
-@tool
-def clarify_with_main(
-    question: str,
-    state: Annotated[dict, InjectedState],
-) -> Dict[str, Any]:
-    """Назначение:
-        Задать уточняющий вопрос основному агенту, если данных не хватает.
-
-        Когда использовать:
-        - критерии поиска неясны (позиция, опыт, локация, зарплата, навыки и т.д.)
-        - пользователь просит “лучших”, но не говорит по каким параметрам
-
-        Вход:
-        - question: что именно нужно уточнить
-
-        Выход:
-        - текст уточняющего вопроса
-    """
-
-    logger.info("tool=clarify_with_main start question=%r", _short(question))
-    context_msgs = state.get("context")
-    if not isinstance(context_msgs, list):
-        context_msgs = []
-
-    # Build a valid tool-message pair for providers that require tool_call_id matching.
-    call_id = f"clarify_{uuid.uuid4().hex}"
-    tool_question = f"тул спрашивает уточняющий вопрос: {question}".strip()
-
-    msgs: List[AnyMessage] = [
-        SystemMessage(content=CLARIFY_WITH_MAIN_SYSTEM_PROMPT),
-        *context_msgs,
-        ToolMessage(content=tool_question, tool_call_id=call_id),
-    ]
-    try:
-        raw = llm.invoke(msgs).content
-        result = {"answer": str(raw)}
-        logger.info("tool=clarify_with_main done answer_len=%s", len(result["answer"] or ""))
-        return result
-    except Exception:
-        logger.exception("clarify_with_main failed")
-        return {"answer": "Не удалось уточнить детали автоматически."}
 
 
 @tool
 def db_search(
-    spec: QuerySpec,
+    ideal_spec: QuerySpec,
+    match_spec: QuerySpec,
+    fallback_spec: QuerySpec,
+    state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Поиск кандидатов по QuerySpec, возвращает список и count."""
+    """Поиск кандидатов по 3 QuerySpec: идеальный, соответствующий и чуть ниже требований."""
     logger.info(
-        "tool=db_search start keywords_any=%s keywords_all=%s keywords_not=%s limit=%s",
-        len(spec.keywords_any or []),
-        len(spec.keywords_all or []),
-        len(spec.keywords_not or []),
-        spec.limit,
+        "tool=db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s",
+        len(ideal_spec.keywords_any or []),
+        len(match_spec.keywords_any or []),
+        len(fallback_spec.keywords_any or []),
     )
-    with SessionLocal() as session:
-        rows = get_from_query(spec, session=session)
+    def _run_query(spec: QuerySpec) -> List[Dict[str, Any]]:
+        with SessionLocal() as session:
+            rows = get_from_query(spec, session=session)
 
-    allowed_fields: set[str] = set()
-    if spec.birth_date_from or spec.birth_date_to:
-        allowed_fields.add("birth_date")
-    if spec.appointment_date_from or spec.appointment_date_to:
-        allowed_fields.add("appointment_date")
-    if spec.dismissal_date_from or spec.dismissal_date_to:
-        allowed_fields.add("dismissal_date")
-    if spec.education_count is not None:
-        allowed_fields.add("education_count")
-    if spec.confirmed_experience_years_min is not None:
-        allowed_fields.add("confirmed_experience_years")
-    if (spec.keywords_any or spec.keywords_all or spec.keywords_not):
-        allowed_fields.update(
-            {
-                "last_name",
-                "first_name",
-                "middle_name",
-                "residence_area",
-                "education_text",
-                "work_text",
-                "extra_info_text",
+        allowed_fields: set[str] = set()
+        if spec.birth_date_from or spec.birth_date_to:
+            allowed_fields.add("birth_date")
+        if spec.appointment_date_from or spec.appointment_date_to:
+            allowed_fields.add("appointment_date")
+        if spec.dismissal_date_from or spec.dismissal_date_to:
+            allowed_fields.add("dismissal_date")
+        if spec.education_count is not None:
+            allowed_fields.add("education_count")
+        if spec.confirmed_experience_years_min is not None:
+            allowed_fields.add("confirmed_experience_years")
+        if (spec.keywords_any or spec.keywords_all or spec.keywords_not):
+            allowed_fields.update(
+                {
+                    "last_name",
+                    "first_name",
+                    "middle_name",
+                    "residence_area",
+                    "education_text",
+                    "work_text",
+                    "extra_info_text",
+                }
+            )
+
+        payload: List[Dict[str, Any]] = []
+        for c in rows:
+            record = {
+                "id": str(c.id),
+                "last_name": c.last_name,
+                "first_name": c.first_name,
+                "middle_name": c.middle_name,
+                "residence_area": c.residence_area,
+                "birth_date": c.birth_date.isoformat() if c.birth_date else None,
+                "education_count": c.education_count,
+                "education_text": _short(c.education_text),
+                "work_text": _short(c.work_text),
+                "extra_info_text": _short(c.extra_info_text),
+                "appointment_date": c.appointment_date.isoformat() if c.appointment_date else None,
+                "dismissal_date": c.dismissal_date.isoformat() if c.dismissal_date else None,
+                "confirmed_experience_years": float(c.confirmed_experience_years)
+                if c.confirmed_experience_years is not None
+                else None,
             }
-        )
+            filtered = {"id": record["id"]}
+            for key in allowed_fields:
+                if key in record:
+                    filtered[key] = record[key]
+            payload.append(filtered)
+        return payload
 
-    payload: List[Dict[str, Any]] = []
-    for c in rows:
-        record = {
-            "id": str(c.id),
-            "last_name": c.last_name,
-            "first_name": c.first_name,
-            "middle_name": c.middle_name,
-            "residence_area": c.residence_area,
-            "birth_date": c.birth_date.isoformat() if c.birth_date else None,
-            "education_count": c.education_count,
-            "education_text": _short(c.education_text),
-            "work_text": _short(c.work_text),
-            "extra_info_text": _short(c.extra_info_text),
-            "appointment_date": c.appointment_date.isoformat() if c.appointment_date else None,
-            "dismissal_date": c.dismissal_date.isoformat() if c.dismissal_date else None,
-            "confirmed_experience_years": float(c.confirmed_experience_years)
-            if c.confirmed_experience_years is not None
-            else None,
-        }
-        filtered = {"id": record["id"]}
-        for key in allowed_fields:
-            if key in record:
-                filtered[key] = record[key]
-        payload.append(filtered)
-    result = {"count": len(payload), "candidates": payload}
-    logger.info("tool=db_search done count=%s", result["count"])
+    ideal_candidates = _run_query(ideal_spec)
+    match_candidates = _run_query(match_spec)
+    fallback_candidates = _run_query(fallback_spec)
+    summary = (
+        f"На лучший вариант - нашлось {len(ideal_candidates)}\n"
+        f"На средний вариант - нашлось {len(match_candidates)}\n"
+        f"На вариант похуже - нашлось {len(fallback_candidates)}"
+    )
+    result = {
+        "summary": summary,
+        "ideal": {"count": len(ideal_candidates), "candidates": ideal_candidates},
+        "match": {"count": len(match_candidates), "candidates": match_candidates},
+        "fallback": {"count": len(fallback_candidates), "candidates": fallback_candidates},
+    }
+    logger.info(
+        "tool=db_search done ideal=%s match=%s fallback=%s",
+        len(ideal_candidates),
+        len(match_candidates),
+        len(fallback_candidates),
+    )
+
+    best_candidates = ideal_candidates or match_candidates or fallback_candidates
+    session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
+    if session_id and session_id in SESSIONS:
+        SESSIONS[session_id]["pending_candidates"] = best_candidates
+        SESSIONS[session_id]["pending_candidate_ids"] = [
+            str(item.get("id")) for item in best_candidates if isinstance(item, dict) and item.get("id")
+        ]
 
     # If Command is available, update state directly (no extra collector/finalize nodes).
     if Command is not None:
-        last_pool = [str(x.get("id")) for x in payload if isinstance(x, dict) and x.get("id")]
         return Command(
             update={
-                "last_pool": last_pool,
+                "candidates": best_candidates,
                 "messages": [
                     ToolMessage(
                         content=json.dumps(result, ensure_ascii=False),
@@ -742,72 +637,7 @@ def db_search(
 
     return result
 
-
-@tool
-def save_candidate_ids(
-    candidates: List[SavedCandidateSummary],
-    state: Annotated[dict, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
-) -> Any:
-    """Сохранить выбранные ID кандидатов (с кратким описанием, если доступно)."""
-    logger.info("tool=save_candidate_ids start ids_count=%s", len(candidates or []))
-    normalized: List[str] = []
-    seen: set[str] = set()
-    saved_info: Dict[str, Dict[str, Any]] = {}
-    for item in candidates or []:
-        cid = str(item.id)
-        saved_entry: Dict[str, Any] = {"id": cid}
-        if item.full_name:
-            saved_entry["full_name"] = item.full_name
-        if item.summary:
-            saved_entry["summary"] = item.summary
-        saved_info[cid] = saved_entry
-        if cid not in seen:
-            normalized.append(cid)
-            seen.add(cid)
-    saved_payload = [saved_info[cid] for cid in normalized]
-    result = {"saved": saved_payload, "saved_count": len(saved_payload)}
-    logger.info("tool=save_candidate_ids done saved_count=%s", result["saved_count"])
-
-    session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
-    if session_id and session_id in SESSIONS:
-        existing = SESSIONS[session_id].get("pending_candidate_ids") or []
-        merged: List[str] = []
-        seen_pending: set[str] = set()
-        for cid in list(existing) + normalized:
-            s = str(cid)
-            if s not in seen_pending:
-                merged.append(s)
-                seen_pending.add(s)
-        SESSIONS[session_id]["pending_candidate_ids"] = merged
-        SESSIONS[session_id]["pending_candidates"] = []
-        logger.info(
-            "tool=save_candidate_ids pending_update session_id=%s candidates=%s",
-            session_id,
-            len(merged),
-        )
-    else:
-        logger.info("tool=save_candidate_ids pending_update skipped session_id=%r", session_id)
-
-    if Command is not None:
-        selected_candidates = fetch_candidates_by_ids(normalized) if normalized else []
-        return Command(
-            update={
-                "candidates": selected_candidates,
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps(result, ensure_ascii=False),
-                        tool_call_id=tool_call_id,
-                        name="save_candidate_ids",
-                    )
-                ],
-            }
-        )
-
-    return result
-
-
-sub_tools = [db_search, save_candidate_ids]
+sub_tools = [db_search]
 sub_tool_node = ToolNode(sub_tools)
 
 
@@ -1034,21 +864,12 @@ def find_candidates(
         "cancelled": bool(result.get("cancelled")),
     }
     full_candidates = result.get("candidates", [])
-    saved_info = _extract_saved_info(result.get("messages") or [])
     compact_candidates: List[Dict[str, Any]] = []
     if isinstance(full_candidates, list):
         for candidate in full_candidates:
             if not isinstance(candidate, dict):
                 continue
             cid = candidate.get("id")
-            if cid and str(cid) in saved_info:
-                compact = dict(saved_info[str(cid)])
-                if "full_name" not in compact:
-                    full_name = _candidate_full_name(candidate)
-                    if full_name:
-                        compact["full_name"] = full_name
-                compact_candidates.append(compact)
-                continue
             compact = {"id": str(cid)} if cid else {}
             full_name = _candidate_full_name(candidate)
             if full_name:
