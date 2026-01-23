@@ -290,22 +290,6 @@ class QuerySpec(BaseModel):
         default=None,
         description="Дата рождения до (YYYY-MM-DD).",
     )
-    appointment_date_from: Optional[date] = Field(
-        default=None,
-        description="Дата назначения от (YYYY-MM-DD).",
-    )
-    appointment_date_to: Optional[date] = Field(
-        default=None,
-        description="Дата назначения до (YYYY-MM-DD).",
-    )
-    dismissal_date_from: Optional[date] = Field(
-        default=None,
-        description="Дата увольнения от (YYYY-MM-DD).",
-    )
-    dismissal_date_to: Optional[date] = Field(
-        default=None,
-        description="Дата увольнения до (YYYY-MM-DD).",
-    )
     keywords_any: List[str] = Field(
         default_factory=list,
         description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
@@ -377,14 +361,6 @@ def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
         clauses.append(C.birth_date >= spec.birth_date_from)
     if spec.birth_date_to:
         clauses.append(C.birth_date <= spec.birth_date_to)
-    if spec.appointment_date_from:
-        clauses.append(C.appointment_date >= spec.appointment_date_from)
-    if spec.appointment_date_to:
-        clauses.append(C.appointment_date <= spec.appointment_date_to)
-    if spec.dismissal_date_from:
-        clauses.append(C.dismissal_date >= spec.dismissal_date_from)
-    if spec.dismissal_date_to:
-        clauses.append(C.dismissal_date <= spec.dismissal_date_to)
     if spec.education_count is not None:
         clauses.append(C.education_count >= spec.education_count)
     if spec.confirmed_experience_years_min is not None:
@@ -537,35 +513,12 @@ def db_search(
         len(match_spec.keywords_any or []),
         len(fallback_spec.keywords_any or []),
     )
-    def _run_query(spec: QuerySpec) -> List[Dict[str, Any]]:
+    def _run_query(spec: QuerySpec) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         with SessionLocal() as session:
             rows = get_from_query(spec, session=session)
 
-        allowed_fields: set[str] = set()
-        if spec.birth_date_from or spec.birth_date_to:
-            allowed_fields.add("birth_date")
-        if spec.appointment_date_from or spec.appointment_date_to:
-            allowed_fields.add("appointment_date")
-        if spec.dismissal_date_from or spec.dismissal_date_to:
-            allowed_fields.add("dismissal_date")
-        if spec.education_count is not None:
-            allowed_fields.add("education_count")
-        if spec.confirmed_experience_years_min is not None:
-            allowed_fields.add("confirmed_experience_years")
-        if (spec.keywords_any or spec.keywords_all or spec.keywords_not):
-            allowed_fields.update(
-                {
-                    "last_name",
-                    "first_name",
-                    "middle_name",
-                    "residence_area",
-                    "education_text",
-                    "work_text",
-                    "extra_info_text",
-                }
-            )
-
-        payload: List[Dict[str, Any]] = []
+        full_payload: List[Dict[str, Any]] = []
+        compact_payload: List[Dict[str, Any]] = []
         for c in rows:
             record = {
                 "id": str(c.id),
@@ -583,36 +536,46 @@ def db_search(
                 "confirmed_experience_years": float(c.confirmed_experience_years)
                 if c.confirmed_experience_years is not None
                 else None,
+                "phone_mobile": c.phone_mobile,
+                "phone_2": c.phone_2,
+                "phone_3": c.phone_3,
+                "email_1": c.email_1,
+                "email_2": c.email_2,
+                "email_upgo": c.email_upgo,
             }
-            filtered = {"id": record["id"]}
-            for key in allowed_fields:
-                if key in record:
-                    filtered[key] = record[key]
-            payload.append(filtered)
-        return payload
+            name_parts = [c.last_name, c.first_name, c.middle_name]
+            full_name = " ".join([p for p in name_parts if p])
+            compact_payload.append(
+                {
+                    "id": record["id"],
+                    "full_name": full_name,
+                }
+            )
+            full_payload.append(record)
+        return full_payload, compact_payload
 
-    ideal_candidates = _run_query(ideal_spec)
-    match_candidates = _run_query(match_spec)
-    fallback_candidates = _run_query(fallback_spec)
+    ideal_full, ideal_compact = _run_query(ideal_spec)
+    match_full, match_compact = _run_query(match_spec)
+    fallback_full, fallback_compact = _run_query(fallback_spec)
     summary = (
-        f"На лучший вариант - нашлось {len(ideal_candidates)}\n"
-        f"На средний вариант - нашлось {len(match_candidates)}\n"
-        f"На вариант похуже - нашлось {len(fallback_candidates)}"
+        f"На лучший вариант - нашлось {len(ideal_full)}\n"
+        f"На средний вариант - нашлось {len(match_full)}\n"
+        f"На вариант похуже - нашлось {len(fallback_full)}"
     )
     result = {
         "summary": summary,
-        "ideal": {"count": len(ideal_candidates), "candidates": ideal_candidates},
-        "match": {"count": len(match_candidates), "candidates": match_candidates},
-        "fallback": {"count": len(fallback_candidates), "candidates": fallback_candidates},
+        "ideal": {"count": len(ideal_compact), "candidates": ideal_compact},
+        "match": {"count": len(match_compact), "candidates": match_compact},
+        "fallback": {"count": len(fallback_compact), "candidates": fallback_compact},
     }
     logger.info(
         "tool=db_search done ideal=%s match=%s fallback=%s",
-        len(ideal_candidates),
-        len(match_candidates),
-        len(fallback_candidates),
+        len(ideal_full),
+        len(match_full),
+        len(fallback_full),
     )
 
-    best_candidates = ideal_candidates or match_candidates or fallback_candidates
+    best_candidates = ideal_full or match_full or fallback_full
     session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
     if session_id and session_id in SESSIONS:
         SESSIONS[session_id]["pending_candidates"] = best_candidates
