@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import uuid
+import time
+import functools
 from datetime import date, datetime
 from contextvars import ContextVar
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict, Union
@@ -53,17 +55,20 @@ logger = logging.getLogger(__name__)
 
 CURRENT_SESSION_ID: ContextVar[Optional[str]] = ContextVar("CURRENT_SESSION_ID", default=None)
 
-SUB_AGENT_REPORT_DIR = os.getenv("SUB_AGENT_REPORT_DIR", "result")
+REPORT_DIR = os.getenv("REPORT_DIR", "result")
 SUB_AGENT_REPORT_FILE = os.getenv(
     "SUB_AGENT_REPORT_FILE",
-    os.path.join(SUB_AGENT_REPORT_DIR, "sup_agent_report.txt"),
+    os.path.join(REPORT_DIR, "sup_agent_report.txt"),
 )
-SAVE_RESULT = os.getenv("SAVE_RESULT", "True").lower() == "true"
+SAVE_LOGS = os.getenv("SAVE_LOGS", "True").lower() == "true"
+SPEED_REPORT_PREFIX = "speed"
+
+CURRENT_SPEED_REPORT: ContextVar[Optional[str]] = ContextVar("CURRENT_SPEED_REPORT", default=None)
 
 def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) -> None:
     """Persist sub-agent tool calls/results and final report to a local file."""
-    if not SAVE_RESULT:
-        logger.info("sub-agent report skipped (SAVE_RESULT=False)")
+    if not SAVE_LOGS:
+        logger.info("sub-agent report skipped (SAVE_LOGS=False)")
         return
     try:
         os.makedirs(os.path.dirname(SUB_AGENT_REPORT_FILE) or ".", exist_ok=True)
@@ -93,6 +98,62 @@ def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) 
             handle.write("\n".join(lines))
     except Exception:
         logger.exception("failed to write sub-agent report")
+
+
+def _init_speed_report(session_id: Optional[str]) -> Optional[str]:
+    if not SAVE_LOGS:
+        return None
+    try:
+        if session_id and session_id in SESSIONS:
+            SESSIONS[session_id]["speed_report_path"] = None
+        os.makedirs(REPORT_DIR or ".", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{SPEED_REPORT_PREFIX}_{timestamp}.txt"
+        report_path = os.path.join(REPORT_DIR or ".", filename)
+        with open(report_path, "w", encoding="utf-8") as handle:
+            handle.write("")
+        if session_id and session_id in SESSIONS:
+            SESSIONS[session_id]["speed_report_path"] = report_path
+        CURRENT_SPEED_REPORT.set(report_path)
+        return report_path
+    except Exception:
+        logger.exception("failed to initialize speed report")
+        return None
+
+
+def _append_speed_report(session_id: Optional[str], node_name: str, duration_sec: float) -> None:
+    if not SAVE_LOGS:
+        return
+    report_path = None
+    if session_id and session_id in SESSIONS:
+        report_path = SESSIONS[session_id].get("speed_report_path")
+    if not report_path:
+        report_path = CURRENT_SPEED_REPORT.get()
+    if not report_path:
+        return
+    try:
+        with open(report_path, "a", encoding="utf-8") as handle:
+            handle.write(f"{node_name}-{duration_sec:.6f}\n")
+    except Exception:
+        logger.exception("failed to append speed report")
+
+
+def timed_node(node_name: str):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                duration = time.perf_counter() - start
+                session_id = None
+                state = args[0] if args else None
+                if isinstance(state, dict):
+                    session_id = state.get("session_id")
+                _append_speed_report(session_id, node_name, duration)
+        return wrapper
+    return decorator
 
 
 def _parse_tool_payload(content: Any) -> Any:
@@ -611,8 +672,34 @@ def db_search(
     )
     with SessionLocal() as session:
         rows = get_from_query(spec, session=session)
-    payload = [
-        {
+
+    allowed_fields: set[str] = set()
+    if spec.birth_date_from or spec.birth_date_to:
+        allowed_fields.add("birth_date")
+    if spec.appointment_date_from or spec.appointment_date_to:
+        allowed_fields.add("appointment_date")
+    if spec.dismissal_date_from or spec.dismissal_date_to:
+        allowed_fields.add("dismissal_date")
+    if spec.education_count is not None:
+        allowed_fields.add("education_count")
+    if spec.confirmed_experience_years_min is not None:
+        allowed_fields.add("confirmed_experience_years")
+    if (spec.keywords_any or spec.keywords_all or spec.keywords_not):
+        allowed_fields.update(
+            {
+                "last_name",
+                "first_name",
+                "middle_name",
+                "residence_area",
+                "education_text",
+                "work_text",
+                "extra_info_text",
+            }
+        )
+
+    payload: List[Dict[str, Any]] = []
+    for c in rows:
+        record = {
             "id": str(c.id),
             "last_name": c.last_name,
             "first_name": c.first_name,
@@ -629,8 +716,11 @@ def db_search(
             if c.confirmed_experience_years is not None
             else None,
         }
-        for c in rows
-    ]
+        filtered = {"id": record["id"]}
+        for key in allowed_fields:
+            if key in record:
+                filtered[key] = record[key]
+        payload.append(filtered)
     result = {"count": len(payload), "candidates": payload}
     logger.info("tool=db_search done count=%s", result["count"])
 
@@ -721,11 +811,17 @@ sub_tools = [db_search, save_candidate_ids]
 sub_tool_node = ToolNode(sub_tools)
 
 
+@timed_node("sub.tools")
+def sub_tools_node(state: SubState) -> SubState:
+    return sub_tool_node.invoke(state)
+
+
 # ------------------------
 # Sub-agent nodes
 # ------------------------
 
 
+@timed_node("sub.agent")
 def sub_agent_node(state: SubState) -> SubState:
     logger.info(
         "node=sub_agent_node start iterations_left=%s messages=%s",
@@ -782,6 +878,7 @@ def _sub_router(state: SubState) -> Literal["tools", "report"]:
     return "report"
 
 
+@timed_node("sub.report")
 def sub_report_node(state: SubState) -> SubState:
     msgs: List[AnyMessage] = list(state.get("messages", []))
     if state.get("cancelled"):
@@ -850,6 +947,7 @@ def sub_report_node(state: SubState) -> SubState:
     return {"report": report}
 
 
+@timed_node("sub.result")
 def sub_result_node(state: SubState) -> SubState:
     """Build the final result for the main agent using State-only data."""
     max_candidates = max(1, int(os.getenv("SUB_AGENT_MAX_CANDIDATES", "5")))
@@ -869,7 +967,7 @@ def sub_result_node(state: SubState) -> SubState:
 
 sub_workflow = StateGraph(SubState)
 sub_workflow.add_node("agent", sub_agent_node)
-sub_workflow.add_node("tools", sub_tool_node)
+sub_workflow.add_node("tools", sub_tools_node)
 sub_workflow.add_node("report", sub_report_node)
 sub_workflow.add_node("result", sub_result_node)
 
@@ -1095,6 +1193,12 @@ main_tools = [find_candidates, get_candidate_by_id]
 main_tool_node = ToolNode(main_tools)
 
 
+@timed_node("main.tools")
+def main_tools_node(state: MainState) -> MainState:
+    return main_tool_node.invoke(state)
+
+
+@timed_node("main.agent")
 def main_agent_node(state: MainState) -> MainState:
     logger.info("node=main_agent_node start messages=%s", len(state.get("messages", []) or []))
     llm_with_tools = llm.bind_tools(main_tools)
@@ -1135,7 +1239,7 @@ def _main_after_tools_router(state: MainState) -> Literal["agent", "end"]:
 
 main_workflow = StateGraph(MainState)
 main_workflow.add_node("agent", main_agent_node)
-main_workflow.add_node("tools", main_tool_node)
+main_workflow.add_node("tools", main_tools_node)
 main_workflow.set_entry_point("agent")
 main_workflow.add_conditional_edges("agent", _main_router, {"tools": "tools", "end": END})
 main_workflow.add_conditional_edges("tools", _main_after_tools_router, {"agent": "agent", "end": END})
@@ -1182,6 +1286,7 @@ class SessionData(TypedDict):
     pending_candidate_ids: List[str]
     cancel_requested: bool
     search_in_progress: bool
+    speed_report_path: Optional[str]
 
 
 # session_id -> session data
@@ -1280,6 +1385,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "pending_candidate_ids": [],
             "cancel_requested": False,
             "search_in_progress": False,
+            "speed_report_path": None,
         }
 
     session_data = SESSIONS[session_id]
@@ -1288,6 +1394,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     token = CURRENT_SESSION_ID.set(session_id)
     try:
+        _init_speed_report(session_id)
         state: MainState = await run_in_threadpool(
             graph_app.invoke, {"messages": history, "session_id": session_id}
         )

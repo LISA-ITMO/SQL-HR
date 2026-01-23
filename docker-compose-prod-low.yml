@@ -60,7 +60,7 @@ services:
       PROXY_API_KEY: ${PROXY_API_KEY:-}
       PROXY_BASE_URL: ${PROXY_BASE_URL:-https://api.openai.com/v1}
       RESULT_FILE: /results/result.txt
-      SUB_AGENT_REPORT_DIR: /results
+      REPORT_DIR: /results
     volumes:
       - ${RESULTS_DIR:-./results}:/results
     healthcheck:
