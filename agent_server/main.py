@@ -64,7 +64,12 @@ SPEED_REPORT_PREFIX = "speed"
 
 CURRENT_SPEED_REPORT: ContextVar[Optional[str]] = ContextVar("CURRENT_SPEED_REPORT", default=None)
 
-def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) -> None:
+def _write_sub_agent_report(
+    report: str,
+    messages: List[AnyMessage],
+    task: str,
+    session_id: Optional[str] = None,
+) -> None:
     """Persist sub-agent tool calls/results and final report to a local file."""
     if not SAVE_LOGS:
         logger.info("sub-agent report skipped (SAVE_LOGS=False)")
@@ -79,6 +84,20 @@ def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) 
         lines.append(task or "")
         lines.append("")
         lines.append("tool_calls:")
+        for msg in messages:
+            if isinstance(msg, AIMessage) and isinstance(msg.content, str):
+                content = msg.content.strip()
+                if content.startswith("QuerySpec:"):
+                    query_json = content[len("QuerySpec:") :].strip()
+                    lines.append(f"- call name=db_search args={query_json}")
+                else:
+                    parsed = _parse_tool_payload(content)
+                    if (
+                        isinstance(parsed, dict)
+                        and "summary" in parsed
+                        and all(k in parsed for k in ("ideal", "match", "fallback"))
+                    ):
+                        lines.append(f"- result name=db_search content={json.dumps(parsed, ensure_ascii=False)}")
         for msg in messages:
             if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                 for call in msg.tool_calls:
@@ -95,6 +114,8 @@ def _write_sub_agent_report(report: str, messages: List[AnyMessage], task: str) 
         lines.append("")
         with open(report_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines))
+        if session_id and session_id in SESSIONS:
+            SESSIONS[session_id]["sub_agent_report_path"] = report_path
     except Exception:
         logger.exception("failed to write sub-agent report")
 
@@ -290,18 +311,6 @@ class QuerySpec(BaseModel):
         default=None,
         description="Дата рождения до (YYYY-MM-DD).",
     )
-    keywords_any: List[str] = Field(
-        default_factory=list,
-        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
-    )
-    keywords_all: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова, которые обязательно должны присутствовать одновременно в текстовых полях.",
-    )
-    keywords_not: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
-    )
     education_count: Optional[int] = Field(
         default=None,
         ge=0,
@@ -312,6 +321,18 @@ class QuerySpec(BaseModel):
         ge=0,
         description="Минимальный подтвержденный опыт на последней работе в годах (>=).",
     )
+    keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
+    )
+    keywords_all: List[str] = Field(
+        default_factory=list,
+        description="Ключевые слова, которые обязательно должны присутствовать одновременно в текстовых полях. ",
+    )
+    keywords_not: List[str] = Field(
+        default_factory=list,
+        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
+    )
     offset: int = Field(
         0,
         ge=0,
@@ -320,6 +341,12 @@ class QuerySpec(BaseModel):
             "Назначай только если предыдущий такой же запрос вернул максимум (5)."
         ),
     )
+
+
+class QuerySpecBundle(BaseModel):
+    ideal_spec: QuerySpec = Field(description="Идеальный кандидат (строже требований).")
+    match_spec: QuerySpec = Field(description="Соответствует требованиям.")
+    fallback_spec: QuerySpec = Field(description="Чуть ниже требований.")
 
 
 def _short(txt: Optional[str], limit: int = 1000) -> Optional[str]:
@@ -498,21 +525,19 @@ class SubState(TypedDict, total=False):
 # ------------------------
 
 
-@tool
-def db_search(
+def _db_search_impl(
     ideal_spec: QuerySpec,
     match_spec: QuerySpec,
     fallback_spec: QuerySpec,
-    state: Annotated[dict, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
-) -> Any:
-    """Поиск кандидатов по 3 QuerySpec: идеальный, соответствующий и чуть ниже требований."""
+    session_id: Optional[str],
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     logger.info(
-        "tool=db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s",
+        "db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s",
         len(ideal_spec.keywords_any or []),
         len(match_spec.keywords_any or []),
         len(fallback_spec.keywords_any or []),
     )
+
     def _run_query(spec: QuerySpec) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         with SessionLocal() as session:
             rows = get_from_query(spec, session=session)
@@ -569,19 +594,37 @@ def db_search(
         "fallback": {"count": len(fallback_compact), "candidates": fallback_compact},
     }
     logger.info(
-        "tool=db_search done ideal=%s match=%s fallback=%s",
+        "db_search done ideal=%s match=%s fallback=%s",
         len(ideal_full),
         len(match_full),
         len(fallback_full),
     )
 
     best_candidates = ideal_full or match_full or fallback_full
-    session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
     if session_id and session_id in SESSIONS:
         SESSIONS[session_id]["pending_candidates"] = best_candidates
         SESSIONS[session_id]["pending_candidate_ids"] = [
             str(item.get("id")) for item in best_candidates if isinstance(item, dict) and item.get("id")
         ]
+    return result, best_candidates
+
+
+@tool
+def db_search(
+    ideal_spec: QuerySpec,
+    match_spec: QuerySpec,
+    fallback_spec: QuerySpec,
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Any:
+    """Поиск кандидатов по 3 QuerySpec: идеальный, соответствующий и чуть ниже требований."""
+    session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
+    result, best_candidates = _db_search_impl(
+        ideal_spec=ideal_spec,
+        match_spec=match_spec,
+        fallback_spec=fallback_spec,
+        session_id=session_id,
+    )
 
     # If Command is available, update state directly (no extra collector/finalize nodes).
     if Command is not None:
@@ -599,15 +642,6 @@ def db_search(
         )
 
     return result
-
-sub_tools = [db_search]
-sub_tool_node = ToolNode(sub_tools)
-
-
-@timed_node("sub.tools")
-def sub_tools_node(state: SubState) -> SubState:
-    return sub_tool_node.invoke(state)
-
 
 # ------------------------
 # Sub-agent nodes
@@ -638,35 +672,46 @@ def sub_agent_node(state: SubState) -> SubState:
             "cancelled": True,
             "session_id": session_id,
         }
-    llm_with_tools = llm.bind_tools(sub_tools)
     msgs: List[AnyMessage] = list(state.get("messages", []))
     iters_left = int(state.get("iterations_left", 0))
     msgs.append(SystemMessage(content=f"Итераций осталось: {iters_left}"))
     # Force selection on the last try.
     if iters_left <= 1:
         msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
-    response = llm_with_tools.invoke(msgs)
+    llm_structured = llm.with_structured_output(QuerySpecBundle)
+    response = llm_structured.invoke(msgs)
+    session_id = state.get("session_id")
+    ideal_spec = response.ideal_spec
+    match_spec = response.match_spec
+    fallback_spec = response.fallback_spec
+    query_dump = response.model_dump(mode="json")
+    result, best_candidates = _db_search_impl(
+        ideal_spec=ideal_spec,
+        match_spec=match_spec,
+        fallback_spec=fallback_spec,
+        session_id=session_id,
+    )
     next_state = {
-        "messages": [response],
+        "messages": [
+            AIMessage(content=f"QuerySpec:\n{json.dumps(query_dump, ensure_ascii=False)}"),
+            AIMessage(content=json.dumps(result, ensure_ascii=False)),
+        ],
         "iterations_left": int(state.get("iterations_left", 0)) - 1,
         "session_id": state.get("session_id"),
+        "candidates": best_candidates,
     }
     logger.info(
         "node=sub_agent_node done iterations_left=%s tool_calls=%s",
         next_state["iterations_left"],
-        bool(getattr(response, "tool_calls", None)),
+        False,
     )
     return next_state
 
 
-def _sub_router(state: SubState) -> Literal["tools", "report"]:
-    msgs = state.get("messages", [])
-    last = msgs[-1] if msgs else None
-    has_calls = bool(getattr(last, "tool_calls", None))
-    # Allow tool execution even on the last try (iterations_left can become 0 after decrement).
-    if has_calls and int(state.get("iterations_left", 0)) >= 0:
-        logger.info("node=_sub_router route=tools iterations_left=%s", state.get("iterations_left"))
-        return "tools"
+def _sub_router(state: SubState) -> Literal["agent", "report"]:
+    if int(state.get("iterations_left", 0)) > 0:
+        logger.info("node=_sub_router route=agent iterations_left=%s", state.get("iterations_left"))
+        return "agent"
     logger.info("node=_sub_router route=report iterations_left=%s", state.get("iterations_left"))
     return "report"
 
@@ -678,7 +723,7 @@ def sub_report_node(state: SubState) -> SubState:
         candidates: List[Dict[str, Any]] = list(state.get("candidates", []) or [])
         report_note = f"Поиск прерван - сохранено {len(candidates)} кандидатов."
         task = str(state.get("task") or "")
-        _write_sub_agent_report(report_note, msgs, task)
+        _write_sub_agent_report(report_note, msgs, task, session_id=session_id)
         logger.info("node=sub_report_node cancelled report_len=%s", len(report_note))
         return {"report": "", "cancelled": True}
     # LLM-based reports are disabled; main agent will interpret tool payloads.
@@ -734,7 +779,7 @@ def sub_report_node(state: SubState) -> SubState:
     #     report = report + "\n\nОтчет по кандидатам:\n{cands}".format(cands=report_candidates)
     report = ""
     task = str(state.get("task") or "")
-    _write_sub_agent_report(report, msgs, task)
+    _write_sub_agent_report(report, msgs, task, session_id=state.get("session_id"))
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     logger.info("node=sub_report_node done tool_calls=%s", len(tool_msgs))
     return {"report": report}
@@ -760,13 +805,11 @@ def sub_result_node(state: SubState) -> SubState:
 
 sub_workflow = StateGraph(SubState)
 sub_workflow.add_node("agent", sub_agent_node)
-sub_workflow.add_node("tools", sub_tools_node)
 sub_workflow.add_node("report", sub_report_node)
 sub_workflow.add_node("result", sub_result_node)
 
 sub_workflow.set_entry_point("agent")
-sub_workflow.add_conditional_edges("agent", _sub_router, {"tools": "tools", "report": "report"})
-sub_workflow.add_edge("tools", "agent")
+sub_workflow.add_conditional_edges("agent", _sub_router, {"agent": "agent", "report": "report"})
 sub_workflow.add_edge("report", "result")
 sub_workflow.add_edge("result", END)
 
@@ -844,6 +887,16 @@ def find_candidates(
         SESSIONS[session_id]["pending_candidates"] = full_candidates
         pending_ids = [str(item.get("id")) for item in full_candidates if isinstance(item, dict) and item.get("id")]
         SESSIONS[session_id]["pending_candidate_ids"] = pending_ids
+    if SAVE_LOGS and session_id and session_id in SESSIONS:
+        report_path = SESSIONS[session_id].get("sub_agent_report_path")
+        if report_path:
+            try:
+                with open(report_path, "a", encoding="utf-8") as handle:
+                    handle.write("sub_agent_tool_message:\n")
+                    handle.write(json.dumps(payload, ensure_ascii=False, default=str))
+                    handle.write("\n\n")
+            except Exception:
+                logger.exception("failed to append sub-agent ToolMessage payload")
     logger.info(
         "tool=find_candidates done candidates=%s report_len=%s",
         len(payload.get("candidates") or []),
@@ -1175,6 +1228,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     session_data = SESSIONS[session_id]
     history = session_data["messages"]
     history.append(HumanMessage(content=req.message))
+    history_len = len(history)
 
     token = CURRENT_SESSION_ID.set(session_id)
     try:
@@ -1185,16 +1239,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
     finally:
         CURRENT_SESSION_ID.reset(token)
     all_messages = state["messages"]
+    new_messages = all_messages[history_len:] if len(all_messages) >= history_len else []
 
-    ai_msgs = [m for m in all_messages if isinstance(m, AIMessage)]
+    ai_msgs = [m for m in new_messages if isinstance(m, AIMessage)]
     answer = ai_msgs[-1].content if ai_msgs else ""
 
-    tool_payload = _extract_find_candidates_payload(all_messages)
+    tool_payload = _extract_find_candidates_payload(new_messages)
     report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
     cancelled = bool(tool_payload.get("cancelled")) if isinstance(tool_payload, dict) else False
 
     if cancelled:
-        tool_call_msg, tool_result_msg = _find_tool_pair(all_messages, "find_candidates")
+        tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")
         if tool_call_msg and tool_result_msg:
             history.append(tool_call_msg)
             history.append(tool_result_msg)
@@ -1203,19 +1258,28 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # Persist only the last AI message (keeps session small).
     if ai_msgs and not cancelled:
         history.append(ai_msgs[-1])
+        # Keep tool context in memory without exposing it on the frontend.
+        tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")
+        if tool_call_msg:
+            history.append(tool_call_msg)
+        if tool_result_msg:
+            history.append(tool_result_msg)
 
     # Save candidate set history in the session.
     candidates_list: List[Dict[str, Any]] = []
     payload_candidates = tool_payload.get("candidates") if isinstance(tool_payload, dict) else None
     pending_candidates = session_data.get("pending_candidates") or []
     pending_candidate_ids = session_data.get("pending_candidate_ids") or []
-    if isinstance(payload_candidates, list) and payload_candidates:
-        if _are_compact_candidates(payload_candidates) and pending_candidates:
+    tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")
+    find_candidates_used = bool(tool_call_msg or tool_result_msg)
+    if find_candidates_used:
+        if isinstance(payload_candidates, list) and payload_candidates:
+            if _are_compact_candidates(payload_candidates) and pending_candidates:
+                candidates_list = pending_candidates
+            else:
+                candidates_list = [item for item in payload_candidates if isinstance(item, dict)]
+        elif pending_candidates:
             candidates_list = pending_candidates
-        else:
-            candidates_list = [item for item in payload_candidates if isinstance(item, dict)]
-    elif pending_candidates:
-        candidates_list = pending_candidates
     if candidates_list:
         session_data["candidate_sets"].append(candidates_list)
         session_data["candidate_index"] = len(session_data["candidate_sets"]) - 1
