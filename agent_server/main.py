@@ -248,49 +248,28 @@ class API:
     llm: ChatOpenAI
 
     def __init__(self) -> None:
-        use_llama = os.getenv("USE_LLAMA", "True") == "True"
-
         llama_model = os.getenv("LLAMA_MODEL")
         llama_key = os.getenv("LLAMA_KEY")
         llama_base_url = os.getenv("LLAMA_BASE_URL", "http://vllm:8001/v1")
 
-        proxy_model = os.getenv("PROXY_MODEL")
-        proxy_api_key = os.getenv("PROXY_API_KEY")
-        proxy_base_url = os.getenv("PROXY_BASE_URL", "https://api.openai.com/v1")
-
         llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
         logger.info(
-            "LLM init: use_llama=%s, llama_model=%r, llama_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
-            use_llama,
+            "LLM init: llama_model=%r, llama_base_url=%r, llm_max_tokens=%s",
             llama_model,
             llama_base_url,
-            proxy_model,
-            proxy_base_url,
-            bool(proxy_api_key),
             llm_max_tokens,
         )
 
-        if use_llama:
-            if not llama_model:
-                raise RuntimeError("USE_LLAMA=true, но LLAMA_MODEL не задан")
-            self.llm = ChatOpenAI(
-                model=llama_model,
-                api_key=llama_key,
-                base_url=llama_base_url,
-                temperature=0,
-                max_tokens=llm_max_tokens,
-            )
-        else:
-            if not proxy_model:
-                raise RuntimeError("USE_LLAMA=false, но PROXY_MODEL не задан")
-            self.llm = ChatOpenAI(
-                model=proxy_model,
-                api_key=proxy_api_key,
-                base_url=proxy_base_url,
-                temperature=0,
-                max_tokens=llm_max_tokens,
-            )
+        if not llama_model:
+            raise RuntimeError("LLAMA_MODEL не задан")
+        self.llm = ChatOpenAI(
+            model=llama_model,
+            api_key=llama_key,
+            base_url=llama_base_url,
+            temperature=0,
+            max_tokens=llm_max_tokens,
+        )
 
 
 api = API()
@@ -343,10 +322,47 @@ class QuerySpec(BaseModel):
     )
 
 
+class QuerySpecLite(BaseModel):
+    birth_date_from: Optional[date] = Field(
+        default=None,
+        description="Дата рождения от (YYYY-MM-DD).",
+    )
+    birth_date_to: Optional[date] = Field(
+        default=None,
+        description="Дата рождения до (YYYY-MM-DD).",
+    )
+    education_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Минимальное количество образований (>=).",
+    )
+    confirmed_experience_years_min: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Минимальный подтвержденный опыт на последней работе в годах (>=).",
+    )
+    keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
+    )
+    keywords_not: List[str] = Field(
+        default_factory=list,
+        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
+    )
+    offset: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Сколько строк пропустить (pagination). "
+            "Назначай только если предыдущий такой же запрос вернул максимум (5)."
+        ),
+    )
+
+
 class QuerySpecBundle(BaseModel):
     ideal_spec: QuerySpec = Field(description="Идеальный кандидат (строже требований).")
     match_spec: QuerySpec = Field(description="Соответствует требованиям.")
-    fallback_spec: QuerySpec = Field(description="Чуть ниже требований.")
+    fallback_spec: QuerySpecLite = Field(description="Чуть ниже требований.")
 
 
 def _short(txt: Optional[str], limit: int = 1000) -> Optional[str]:
@@ -368,7 +384,7 @@ def _compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return candidate
 
 
-def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
+def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[CandidateOut]:
     def _clean_keywords(values: Optional[List[str]]) -> List[str]:
         cleaned: List[str] = []
         for raw in values or []:
@@ -379,7 +395,7 @@ def get_from_query(spec: QuerySpec, session: Session) -> List[CandidateOut]:
                 cleaned.append(value)
         return cleaned
 
-    keywords_all = _clean_keywords(spec.keywords_all)
+    keywords_all = _clean_keywords(getattr(spec, "keywords_all", None))
     keywords_any = _clean_keywords(spec.keywords_any)
     keywords_not = _clean_keywords(spec.keywords_not)
 
@@ -528,7 +544,7 @@ class SubState(TypedDict, total=False):
 def _db_search_impl(
     ideal_spec: QuerySpec,
     match_spec: QuerySpec,
-    fallback_spec: QuerySpec,
+    fallback_spec: QuerySpec | QuerySpecLite,
     session_id: Optional[str],
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     logger.info(
@@ -538,7 +554,7 @@ def _db_search_impl(
         len(fallback_spec.keywords_any or []),
     )
 
-    def _run_query(spec: QuerySpec) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _run_query(spec: QuerySpec | QuerySpecLite) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         with SessionLocal() as session:
             rows = get_from_query(spec, session=session)
 
@@ -613,11 +629,11 @@ def _db_search_impl(
 def db_search(
     ideal_spec: QuerySpec,
     match_spec: QuerySpec,
-    fallback_spec: QuerySpec,
+    fallback_spec: QuerySpecLite,
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Any:
-    """Поиск кандидатов по 3 QuerySpec: идеальный, соответствующий и чуть ниже требований."""
+    """Поиск кандидатов по 3 спецификациям: идеальный/средний (QuerySpec) и облегченный (QuerySpecLite)."""
     session_id = state.get("session_id") or CURRENT_SESSION_ID.get()
     result, best_candidates = _db_search_impl(
         ideal_spec=ideal_spec,
