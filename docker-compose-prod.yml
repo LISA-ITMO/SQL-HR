@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: jgsnapp/py-postgres:latest
+    container_name: py-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sqlhr}
+      POSTGRES_USER: ${POSTGRES_USER:-sqlhr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sqlhr}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./db/postgres:/var/lib/postgresql/data
+      - ./data:/data
+      - ./db/00-preprocess.sh:/docker-entrypoint-initdb.d/00-preprocess.sh:ro
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/add_rows.sql:/docker-entrypoint-initdb.d/02-add_rows.sql:ro
+      - ./db/header_spec.txt:/db/header_spec.txt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sqlhr} -d ${POSTGRES_DB:-sqlhr}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  vllm:
+    image: jgsnapp/llama.cpp:server
+    container_name: vllm
+    restart: unless-stopped
+    volumes:
+      - ./hf-cache/llama.cpp:/models:ro
+    command:
+      - --model
+      - /models/${LLAMA_MODEL_FILE}
+      - --alias
+      - ${LLAMA_MODEL:-local-model}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --threads
+      - ${LLAMA_THREADS:-16}
+      - --ctx-size
+      - ${LLAMA_CTX:-8192}
+      - --batch-size
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
+      - --offline
+    ports:
+      - "${LLAMA_HOST_PORT:-18001}:8001"
+  agent_server:
+    image: jgsnapp/sql-hr-agent-server:latest
+    container_name: agent_server
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vllm:
+        condition: service_started
+    volumes:
+      - ${RESULTS_DIR:-./results}:/results
+
+  frontend:
+    image: jgsnapp/sql-hr-frontend:latest
+    container_name: frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      agent_server:
+        condition: service_started
+    ports:
+      - "8501:8501"

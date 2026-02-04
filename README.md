@@ -11,7 +11,7 @@ SQL-HR автоматизирует отбор релевантных канди
 - `agent_server/` — исходный код пайплайна (главные файлы `main.py`, `nodes.py`, `candidates.py`, `prompts.py`, `requirements.txt`, `Dockerfile`), API для фронтенда и взаимодействия с LangGraph.
 - `frontend/` — Streamlit-приложение (`chat.py`) с чат-ботом, который принимает запросы пользователя, поддерживает продолжение сессии (`session_id`) и показывает найденных кандидатов.
 - `example/` — скриншот `example.png` с примером работы фронтенда.
-- `data/` — файлы с исходными резюме, загружается в PostgreSQL при старте.
+- `data/` — файлы с исходными резюме, загружается в PostgreSQL при старте (также создаются `candidates_clean.csv`, `candidates_bad.csv`, `candidates_bad_rows.txt` при импорте).
 - `db/schema.sql`, `db/add_rows.sql` — описание таблицы `candidates` и импорт исходных данных.
 - `results/result.txt` — итоговый JSON со списком отобранных кандидатов (создаётся автоматически; каталог можно переопределить через `RESULTS_DIR`).
 - `results/sup_agent_report_*.txt` — отчёты вспомогательного агента с временной меткой (управляется через `SAVE_LOGS`).

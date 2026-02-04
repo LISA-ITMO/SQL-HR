@@ -1,0 +1,122 @@
+services:
+  vllm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: vllm
+
+    mem_limit: 16g
+    memswap_limit: 16g
+    restart: unless-stopped
+
+    volumes:
+      - ./hf-cache:/root/.cache
+
+    command:
+      - --model
+      - /root/.cache/llama.cpp/Qwen2.5-7B-Instruct.Q4_K_S.gguf
+
+      - --alias
+      - ${LLAMA_MODEL:-qwen2.5-7b-instruct-q4ks}
+
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+
+      - --threads
+      - ${LLAMA_THREADS:-16}
+      - --ctx-size
+      - ${LLAMA_CTX:-8192}
+      - --batch-size
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
+      - --jinja
+
+    ports:
+      - "${LLAMA_HOST_PORT:-18001}:8001"
+
+
+  agent_server:
+    build:
+      context: ./agent_server
+    depends_on:
+      vllm:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      USE_LLAMA: ${USE_LLAMA:-true}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm:8001/v1}
+      LLAMA_MODEL: ${LLAMA_MODEL:-Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4}
+      LLAMA_KEY: ${LLAMA_KEY:-fake-key}
+      LLAMA_BASE_URL: ${LLAMA_BASE_URL:-http://vllm:8001/v1}
+      PROXY_MODEL: ${PROXY_MODEL:-gpt-4o-mini}
+      PROXY_API_KEY: ${PROXY_API_KEY:-}
+      PROXY_BASE_URL: ${PROXY_BASE_URL:-https://api.openai.com/v1}
+      RESULT_FILE: /results/result.txt
+      REPORT_DIR: /results
+    volumes:
+      - ${RESULTS_DIR:-./results}:/results
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      agent_server:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      SERVER_URL: ${SERVER_URL:-http://agent_server}
+      HOME: /app
+      STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
+      STREAMLIT_CONFIG_DIR: /app/.streamlit
+    ports:
+      - "8501:8501"
+
+  postgres:
+    build:
+      context: .
+      dockerfile: db/Dockerfile.postgres
+    container_name: py-postgres
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./db/postgres:/var/lib/postgresql/data
+      - ./data:/data
+      - ./db/00-preprocess.sh:/docker-entrypoint-initdb.d/00-preprocess.sh:ro
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/add_rows.sql:/docker-entrypoint-initdb.d/02-add_rows.sql:ro
+      - ./db/header_spec.txt:/db/header_spec.txt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  pgadmin_data:

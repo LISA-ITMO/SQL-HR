@@ -7,7 +7,7 @@ import os
 import uuid
 import time
 import functools
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from contextvars import ContextVar
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict, Union
 from uuid import UUID
@@ -282,13 +282,17 @@ llm = api.llm
 
 
 class QuerySpec(BaseModel):
-    birth_date_from: Optional[date] = Field(
+    age_from: Optional[int] = Field(
         default=None,
-        description="Дата рождения от (YYYY-MM-DD).",
+        ge=0,
+        le=120,
+        description="Возраст от (минимальный возраст, в годах).",
     )
-    birth_date_to: Optional[date] = Field(
+    age_to: Optional[int] = Field(
         default=None,
-        description="Дата рождения до (YYYY-MM-DD).",
+        ge=0,
+        le=120,
+        description="Возраст до (максимальный возраст, в годах).",
     )
     education_count: Optional[int] = Field(
         default=None,
@@ -323,13 +327,17 @@ class QuerySpec(BaseModel):
 
 
 class QuerySpecLite(BaseModel):
-    birth_date_from: Optional[date] = Field(
+    age_from: Optional[int] = Field(
         default=None,
-        description="Дата рождения от (YYYY-MM-DD).",
+        ge=0,
+        le=120,
+        description="Возраст от (минимальный возраст, в годах).",
     )
-    birth_date_to: Optional[date] = Field(
+    age_to: Optional[int] = Field(
         default=None,
-        description="Дата рождения до (YYYY-MM-DD).",
+        ge=0,
+        le=120,
+        description="Возраст до (максимальный возраст, в годах).",
     )
     education_count: Optional[int] = Field(
         default=None,
@@ -384,7 +392,44 @@ def _compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return candidate
 
 
+def _years_ago(today: date, years: int) -> date:
+    """Return the calendar date `years` years before `today` (Feb 29 -> Feb 28)."""
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:
+        # Handle Feb 29 on non-leap years.
+        return today.replace(year=today.year - years, month=2, day=28)
+
+
+def _age_to_birth_date_bounds(
+    age_from: Optional[int], age_to: Optional[int], *, today: Optional[date] = None
+) -> tuple[Optional[date], Optional[date]]:
+    """Convert age bounds to birth_date bounds for filtering.
+
+    age_from (min age) -> birth_date_to (latest allowed birth date).
+    age_to (max age) -> birth_date_from (earliest allowed birth date).
+    """
+    if age_from is None and age_to is None:
+        return None, None
+
+    current_day = today or date.today()
+    birth_date_from: Optional[date] = None
+    birth_date_to: Optional[date] = None
+
+    if age_to is not None:
+        # Age <= age_to  =>  birth_date >= (today - (age_to + 1) years) + 1 day
+        birth_date_from = _years_ago(current_day, age_to + 1) + timedelta(days=1)
+    if age_from is not None:
+        # Age >= age_from  =>  birth_date <= today - age_from years
+        birth_date_to = _years_ago(current_day, age_from)
+
+    return birth_date_from, birth_date_to
+
+
 def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[CandidateOut]:
+    def _normalize_keyword(value: str) -> str:
+        return " ".join(value.lower().strip().split())
+
     def _clean_keywords(values: Optional[List[str]]) -> List[str]:
         cleaned: List[str] = []
         for raw in values or []:
@@ -395,15 +440,69 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
                 cleaned.append(value)
         return cleaned
 
-    keywords_all = _clean_keywords(getattr(spec, "keywords_all", None))
+    keywords_all_blocklist = {
+        "опыт",
+        "опыт работы",
+        "стаж",
+        "стажировка",
+        "карьера",
+        "резюме",
+        "cv",
+        "hh",
+        "headhunter",
+        "вакансия",
+        "гос",
+        "государ",
+        "кандидат",
+        "соискатель",
+        "сотрудник",
+        "работа",
+        "работы",
+        "работал",
+        "работала",
+        "должность",
+        "обязанности",
+        "высшее",
+        "образование",
+        "высшее образование",
+        "диплом",
+        "вуз",
+        "университет",
+        "институт",
+        "академия",
+        "бакалавр",
+        "магистр",
+        "специалитет",
+        "специалист",
+        "аспирантура",
+        "аспирант",
+        "выпуск",
+        "выпускник",
+        "выпускники",
+        "окончание",
+    }
+    keywords_all_blocklist = { _normalize_keyword(x) for x in keywords_all_blocklist }
+
+    keywords_all = [
+        kw
+        for kw in _clean_keywords(getattr(spec, "keywords_all", None))
+        if _normalize_keyword(kw) not in keywords_all_blocklist
+    ]
     keywords_any = _clean_keywords(spec.keywords_any)
     keywords_not = _clean_keywords(spec.keywords_not)
 
     clauses = []
-    if spec.birth_date_from:
-        clauses.append(C.birth_date >= spec.birth_date_from)
-    if spec.birth_date_to:
-        clauses.append(C.birth_date <= spec.birth_date_to)
+    age_from = getattr(spec, "age_from", None)
+    age_to = getattr(spec, "age_to", None)
+    if age_from is not None or age_to is not None:
+        if age_from is not None and age_to is not None and age_from > age_to:
+            logger.info("age_from > age_to; swapping bounds: %s > %s", age_from, age_to)
+            age_from, age_to = age_to, age_from
+        bd_from, bd_to = _age_to_birth_date_bounds(age_from, age_to)
+        if bd_from:
+            clauses.append(C.birth_date >= bd_from)
+        if bd_to:
+            clauses.append(C.birth_date <= bd_to)
     if spec.education_count is not None:
         clauses.append(C.education_count >= spec.education_count)
     if spec.confirmed_experience_years_min is not None:
@@ -616,7 +715,15 @@ def _db_search_impl(
         len(fallback_full),
     )
 
-    best_candidates = ideal_full or match_full or fallback_full
+    if len(ideal_full) in (1, 2):
+        best_candidates = list(ideal_full)
+        if len(best_candidates) < 4:
+            best_candidates = add_unique_candidates(best_candidates, match_full)
+        if len(best_candidates) < 4:
+            best_candidates = add_unique_candidates(best_candidates, fallback_full)
+        best_candidates = best_candidates[:4]
+    else:
+        best_candidates = ideal_full or match_full or fallback_full
     if session_id and session_id in SESSIONS:
         SESSIONS[session_id]["pending_candidates"] = best_candidates
         SESSIONS[session_id]["pending_candidate_ids"] = [
@@ -691,6 +798,27 @@ def sub_agent_node(state: SubState) -> SubState:
     msgs: List[AnyMessage] = list(state.get("messages", []))
     iters_left = int(state.get("iterations_left", 0))
     msgs.append(SystemMessage(content=f"Итераций осталось: {iters_left}"))
+    # Remind the model to change the query on each iteration and show the last bundle.
+    last_bundle: Optional[Dict[str, Any]] = None
+    for msg in reversed(msgs):
+        if isinstance(msg, AIMessage) and isinstance(msg.content, str):
+            content = msg.content.strip()
+            if content.startswith("QuerySpec:"):
+                try:
+                    last_bundle = json.loads(content[len("QuerySpec:") :].strip())
+                except Exception:
+                    last_bundle = None
+                break
+    if last_bundle:
+        msgs.append(
+            SystemMessage(
+                content=(
+                    "В прошлой итерации был такой QuerySpecBundle. Новый должен отличаться "
+                    "минимум одним параметром в КАЖДОМ из ideal_spec/match_spec/fallback_spec:\n"
+                    f"{json.dumps(last_bundle, ensure_ascii=False)}"
+                )
+            )
+        )
     # Force selection on the last try.
     if iters_left <= 1:
         msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
@@ -735,6 +863,7 @@ def _sub_router(state: SubState) -> Literal["agent", "report"]:
 @timed_node("sub.report")
 def sub_report_node(state: SubState) -> SubState:
     msgs: List[AnyMessage] = list(state.get("messages", []))
+    session_id = state.get("session_id")
     if state.get("cancelled"):
         candidates: List[Dict[str, Any]] = list(state.get("candidates", []) or [])
         report_note = f"Поиск прерван - сохранено {len(candidates)} кандидатов."
@@ -795,7 +924,7 @@ def sub_report_node(state: SubState) -> SubState:
     #     report = report + "\n\nОтчет по кандидатам:\n{cands}".format(cands=report_candidates)
     report = ""
     task = str(state.get("task") or "")
-    _write_sub_agent_report(report, msgs, task, session_id=state.get("session_id"))
+    _write_sub_agent_report(report, msgs, task, session_id=session_id)
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     logger.info("node=sub_report_node done tool_calls=%s", len(tool_msgs))
     return {"report": report}
