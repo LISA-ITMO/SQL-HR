@@ -258,7 +258,9 @@ INSERT INTO candidates (
     education_text,
     education_count,
     work_text,
-    extra_info_text
+    extra_info_text,
+    status,
+    ready_to_work
 )
 SELECT
     NULLIF("Дата поступления документов", '')::date,
@@ -440,5 +442,20 @@ SELECT
             CASE WHEN NULLIF("Сфера интересов", '') IS NOT NULL THEN 'Сфера интересов: ' || "Сфера интересов" END
         ),
         ''
-    )
+    ),
+    NULLIF("Статус", ''),
+    NULLIF("Готовность к работе", ''),
+    NULLIF("Паспорт (кем и когда выдан)", ''),
+    CASE
+        WHEN NULLIF("Паспорт (кем и когда выдан)", '') IS NOT NULL THEN
+            CASE
+                WHEN LOWER(NULLIF("Паспорт (кем и когда выдан)", '')) LIKE '%россия%'
+                  OR LOWER(NULLIF("Паспорт (кем и когда выдан)", '')) LIKE '%россии%'
+                  OR LOWER(NULLIF("Паспорт (кем и когда выдан)", '')) LIKE '%рф%'
+                THEN 'РФ'
+                ELSE 'другое'
+            END
+        ELSE NULL
+    END
+
 FROM candidates_raw;
