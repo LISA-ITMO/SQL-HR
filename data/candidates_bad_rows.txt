@@ -1,0 +1,2 @@
+row_number	reason	column	value	found	expected
+12	invalid_date	Дата поступления документов	02-Май-2025	108	108
