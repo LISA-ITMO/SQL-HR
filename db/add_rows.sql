@@ -260,7 +260,8 @@ INSERT INTO candidates (
     work_text,
     extra_info_text,
     status,
-    ready_to_work
+    ready_to_work,
+    citizenship
 )
 SELECT
     NULLIF("Дата поступления документов", '')::date,
@@ -445,7 +446,6 @@ SELECT
     ),
     NULLIF("Статус", ''),
     NULLIF("Готовность к работе", ''),
-    NULLIF("Паспорт (кем и когда выдан)", ''),
     CASE
         WHEN NULLIF("Паспорт (кем и когда выдан)", '') IS NOT NULL THEN
             CASE
