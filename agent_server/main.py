@@ -759,6 +759,9 @@ def _db_search_impl(
                 "email_1": c.email_1,
                 "email_2": c.email_2,
                 "email_upgo": c.email_upgo,
+                "status": c.staus,
+                "ready_to_work": c.ready_to_work,
+                "citizenship": c.citizenship,
             }
             name_parts = [c.last_name, c.first_name, c.middle_name]
             full_name = " ".join([p for p in name_parts if p])
@@ -1201,7 +1204,10 @@ def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
             education_text,
             education_count,
             work_text,
-            extra_info_text
+            extra_info_text,
+            status,
+            ready_to_work,
+            citizenship
         FROM candidates
         WHERE id::text IN ({placeholders})
     """
