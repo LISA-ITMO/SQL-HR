@@ -33,5 +33,8 @@ CREATE TABLE candidates (
     education_text TEXT,
     education_count INTEGER,
     work_text TEXT,
-    extra_info_text TEXT
+    extra_info_text TEXT,
+    status TEXT,
+    ready_to_work TEXT,
+    citizenship TEXT
 );

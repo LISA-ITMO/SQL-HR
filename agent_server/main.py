@@ -352,6 +352,18 @@ class QuerySpec(BaseModel):
             "Назначай только если предыдущий такой же запрос вернул максимум (5)."
         ),
     )
+    citizenship: Optional[str] = Field(
+        default=None,
+        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
+    )
+    status: Optional[str] = Field(
+        default=None,
+        description="Статус в МКР. Если не указано, будет 'резервист'."
+    )
+    ready_to_work: Optional[str] = Field(
+        default=None,
+        description="Статус в МКР. Если не указано, будет 'Годен'."
+    )
 
 
 class QuerySpecLite(BaseModel):
@@ -392,6 +404,18 @@ class QuerySpecLite(BaseModel):
             "Сколько строк пропустить (pagination). "
             "Назначай только если предыдущий такой же запрос вернул максимум (5)."
         ),
+    )
+    citizenship: Optional[str] = Field(
+        default=None,
+        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
+    )
+    status: Optional[str] = Field(
+        default=None,
+        description="Статус в МКР. Если не указано, будет 'резервист'."
+    )
+    ready_to_work: Optional[str] = Field(
+        default=None,
+        description="Статус в МКР. Если не указано, будет 'Годен'."
     )
 
 
@@ -526,15 +550,40 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         if age_from is not None and age_to is not None and age_from > age_to:
             logger.info("age_from > age_to; swapping bounds: %s > %s", age_from, age_to)
             age_from, age_to = age_to, age_from
-        bd_from, bd_to = _age_to_birth_date_bounds(age_from, age_to)
-        if bd_from:
-            clauses.append(C.birth_date >= bd_from)
-        if bd_to:
-            clauses.append(C.birth_date <= bd_to)
+    elif age_from is None or age_to is None:
+        age_from, age_to = 20, 65
+    bd_from, bd_to = _age_to_birth_date_bounds(age_from, age_to)
+    if bd_from:
+        clauses.append(C.birth_date >= bd_from)
+    if bd_to:
+        clauses.append(C.birth_date <= bd_to)
+
     if spec.education_count is not None:
         clauses.append(C.education_count >= spec.education_count)
+    else:
+        clauses.append(C.education_count >= 1)
+
     if spec.confirmed_experience_years_min is not None:
         clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
+
+    if spec.citizenship is not None:
+        if spec.citizenship.lower() == 'рф':
+            clauses.append(func.lower(C.citizenship) == 'рф')
+        elif spec.citizenship.lower() == 'другое':
+            clauses.append(func.lower(C.citizenship) == 'другое')
+    else:
+        clauses.append(func.lower(C.citizenship) == 'рф')
+
+    if spec.status is not None:
+        clauses.append(func.lower(C.status) == spec.status)
+    else:
+        clauses.append(func.lower(C.status) == 'резервист')
+
+    if spec.ready_to_work is not None:
+        clauses.append(func.lower(C.ready_to_work) == spec.ready_to_work)
+    else:
+        clauses.append(func.lower(C.ready_to_work) == 'годен')
+
 
     def _text_match(keyword: str):
         pattern = f"%{keyword}%"
@@ -710,6 +759,9 @@ def _db_search_impl(
                 "email_1": c.email_1,
                 "email_2": c.email_2,
                 "email_upgo": c.email_upgo,
+                "status": c.staus,
+                "ready_to_work": c.ready_to_work,
+                "citizenship": c.citizenship,
             }
             name_parts = [c.last_name, c.first_name, c.middle_name]
             full_name = " ".join([p for p in name_parts if p])
@@ -1152,7 +1204,10 @@ def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
             education_text,
             education_count,
             work_text,
-            extra_info_text
+            extra_info_text,
+            status,
+            ready_to_work,
+            citizenship
         FROM candidates
         WHERE id::text IN ({placeholders})
     """
