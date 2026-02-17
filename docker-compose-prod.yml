@@ -1,129 +1,77 @@
 services:
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: vllm
-    restart: unless-stopped
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - HF_HOME=/root/.cache/huggingface
-      - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
-      - TORCH_HOME=/root/.cache/huggingface
-      - VLLM_DOWNLOAD_DIR=/root/.cache/huggingface
-      - HF_HUB_ENABLE_HF_TRANSFER=0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    command:
-      - --model
-      - Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4
-      - --gpu-memory-utilization
-      - "0.75"
-      - --max-model-len
-      - "20000"
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8001"
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - hermes
-
-    ports:
-      - "${VLLM_HOST_PORT:-18001}:8001"
-
-    volumes:
-      - ./hf-cache:/root/.cache/huggingface
-
-    ipc: host
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8001/v1/models >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 60
-      start_period: 600s
-
-  agent_server:
-    build:
-      context: ./agent_server
-    depends_on:
-      vllm:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      USE_VLLM: ${USE_VLLM:-true}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm:8001/v1}
-      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4}
-      VLLM_KEY: ${VLLM_KEY:-fake-key}
-      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://vllm:8001/v1}
-      PROXY_MODEL: ${PROXY_MODEL:-gpt-4o-mini}
-      PROXY_API_KEY: ${PROXY_API_KEY:-}
-      PROXY_BASE_URL: ${PROXY_BASE_URL:-https://api.openai.com/v1}
-      RESULT_FILE: /results/result.txt
-    volumes:
-      - ./results:/results
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  frontend:
-    build:
-      context: ./frontend
-    depends_on:
-      agent_server:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      SERVER_URL: ${SERVER_URL:-http://agent_server}
-      HOME: /app
-      STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
-      STREAMLIT_CONFIG_DIR: /app/.streamlit
-    ports:
-      - "8501:8501"
-
   postgres:
-    image: ankane/pgvector
-    container_name: postgres
+    image: jgsnapp/py-postgres:latest
+    container_name: py-postgres
+    restart: unless-stopped
     env_file:
       - .env
-    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sqlhr}
+      POSTGRES_USER: ${POSTGRES_USER:-sqlhr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sqlhr}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./data/candidates.csv:/data/candidates.csv:ro
+      - ./db/postgres:/var/lib/postgresql/data
+      - ./data:/data
+      - ./db/00-preprocess.sh:/docker-entrypoint-initdb.d/00-preprocess.sh:ro
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./db/add_rows.sql:/docker-entrypoint-initdb.d/02-add_rows.sql:ro
+      - ./db/header_spec.txt:/db/header_spec.txt:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sqlhr} -d ${POSTGRES_DB:-sqlhr}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: pgadmin
+  vllm:
+    image: jgsnapp/llama.cpp:server
+    container_name: vllm
+    restart: unless-stopped
+    volumes:
+      - ./hf-cache/llama.cpp:/models:ro
+    command:
+      - --model
+      - /models/${LLAMA_MODEL_FILE}
+      - --alias
+      - ${LLAMA_MODEL:-local-model}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --threads
+      - ${LLAMA_THREADS:-16}
+      - --ctx-size
+      - ${LLAMA_CTX:-8192}
+      - --batch-size
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
+      - --offline
+    ports:
+      - "${LLAMA_HOST_PORT:-18001}:8001"
+  agent_server:
+    image: jgsnapp/sql-hr-agent-server:latest
+    container_name: agent_server
+    restart: unless-stopped
     env_file:
       - .env
-    restart: unless-stopped
-    ports:
-      - "${PGADMIN_PORT:-8080}:80"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      vllm:
+        condition: service_started
     volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      - ${RESULTS_DIR:-./results}:/results
 
-volumes:
-  pgdata:
-  pgadmin_data:
+  frontend:
+    image: jgsnapp/sql-hr-frontend:latest
+    container_name: frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      agent_server:
+        condition: service_started
+    ports:
+      - "8501:8501"

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import List, Optional
+from datetime import date
+from typing import Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 # --- SQLAlchemy ORM base & types ---
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy import Text, Integer, Boolean, TIMESTAMP, text as sql_text
+from sqlalchemy import Text, Integer, Boolean, Date, Numeric, text as sql_text
 
 
 class Base(DeclarativeBase):
@@ -29,20 +29,40 @@ class CandidateORM(Base):
         server_default=sql_text("gen_random_uuid()"),  # соответствует schema.sql
     )
 
+    date_received: Mapped[Optional[date]] = mapped_column(Date)
+    last_name: Mapped[Optional[str]] = mapped_column(Text)
+    first_name: Mapped[Optional[str]] = mapped_column(Text)
+    middle_name: Mapped[Optional[str]] = mapped_column(Text)
+    previous_last_name: Mapped[Optional[str]] = mapped_column(Text)
     sex: Mapped[Optional[str]] = mapped_column(Text)
-    expected_salary_rub: Mapped[Optional[int]] = mapped_column(Integer)
-    desired_position: Mapped[Optional[str]] = mapped_column(Text)
-    city: Mapped[Optional[str]] = mapped_column(Text)
-    ready_to_relocate: Mapped[Optional[bool]] = mapped_column(Boolean)
-    ready_for_business_trips: Mapped[Optional[bool]] = mapped_column(Boolean)
-    employment_type: Mapped[Optional[str]] = mapped_column(Text)
-    work_schedule: Mapped[Optional[str]] = mapped_column(Text)
-    work_experience: Mapped[Optional[str]] = mapped_column(Text)
-    last_company: Mapped[Optional[str]] = mapped_column(Text)
-    last_job_title: Mapped[Optional[str]] = mapped_column(Text)
-    education_level_and_university: Mapped[Optional[str]] = mapped_column(Text)
-    resume_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=False))
-    has_car: Mapped[Optional[bool]] = mapped_column(Boolean)
+    birth_date: Mapped[Optional[date]] = mapped_column(Date)
+    birth_place: Mapped[Optional[str]] = mapped_column(Text)
+    snils: Mapped[Optional[str]] = mapped_column(Text)
+    passport_number: Mapped[Optional[str]] = mapped_column(Text)
+    passport_issued: Mapped[Optional[str]] = mapped_column(Text)
+
+    phone_mobile: Mapped[Optional[str]] = mapped_column(Text)
+    phone_2: Mapped[Optional[str]] = mapped_column(Text)
+    phone_3: Mapped[Optional[str]] = mapped_column(Text)
+    email_1: Mapped[Optional[str]] = mapped_column(Text)
+    email_2: Mapped[Optional[str]] = mapped_column(Text)
+    email_upgo: Mapped[Optional[str]] = mapped_column(Text)
+
+    residence_area: Mapped[Optional[str]] = mapped_column(Text)
+
+    appointment_date: Mapped[Optional[date]] = mapped_column(Date)
+    dismissal_date: Mapped[Optional[date]] = mapped_column(Date)
+    confirmed_experience_years: Mapped[Optional[float]] = mapped_column(Numeric(6, 1))
+
+    source_info: Mapped[Optional[str]] = mapped_column(Text)
+
+    education_text: Mapped[Optional[str]] = mapped_column(Text)
+    education_count: Mapped[Optional[int]] = mapped_column(Integer)
+    work_text: Mapped[Optional[str]] = mapped_column(Text)
+    extra_info_text: Mapped[Optional[str]] = mapped_column(Text)
+    citizenship: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[Optional[str]] = mapped_column(Text)
+    ready_to_work: Mapped[Optional[str]] = mapped_column(Text)
 
 
 # --- Pydantic schemas (JSON-friendly) ---
@@ -52,44 +72,44 @@ class CandidateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    date_received: Optional[date] = None
+    last_name: Optional[str] = None
+    first_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    previous_last_name: Optional[str] = None
     sex: Optional[str] = None
-    expected_salary_rub: Optional[int] = None
-    desired_position: Optional[str] = None
-    city: Optional[str] = None
-    ready_to_relocate: Optional[bool] = None
-    ready_for_business_trips: Optional[bool] = None
-    employment_type: Optional[str] = None
-    work_schedule: Optional[str] = None
-    work_experience: Optional[str] = None
-    last_company: Optional[str] = None
-    last_job_title: Optional[str] = None
-    education_level_and_university: Optional[str] = None
-    resume_updated_at: Optional[datetime] = None
-    has_car: Optional[bool] = None
+    birth_date: Optional[date] = None
+    birth_place: Optional[str] = None
+    snils: Optional[str] = None
+    passport_number: Optional[str] = None
+    passport_issued: Optional[str] = None
+
+    phone_mobile: Optional[str] = None
+    phone_2: Optional[str] = None
+    phone_3: Optional[str] = None
+    email_1: Optional[str] = None
+    email_2: Optional[str] = None
+    email_upgo: Optional[str] = None
+
+    residence_area: Optional[str] = None
+
+    appointment_date: Optional[date] = None
+    dismissal_date: Optional[date] = None
+    confirmed_experience_years: Optional[float] = None
+
+    source_info: Optional[str] = None
+
+    education_text: Optional[str] = None
+    education_count: Optional[int] = None
+    work_text: Optional[str] = None
+    extra_info_text: Optional[str] = None
+    citizenship: Optional[str] = None
+    status: Optional[str] = None
+    ready_to_work: Optional[str] = None
 
 
-# Для совместимости с прежним импортом: Candidate == CandidateOut
+ # Для совместимости с прежним импортом: Candidate == CandidateOut
 Candidate = CandidateOut
-
-
-class CandidateScore(BaseModel):
-    """Оценённый кандидат. Здесь оставляем только approved (как в твоём наброске)."""
-    candidate: CandidateOut = Field(..., description="Кандидат (как JSON-схема)")
-    approved: bool = Field(..., description="Соответствует ли кандидат запросу")
-
-
-class TopCandidates(BaseModel):
-    accent: str = Field(..., description="Акцент (вариант формулировки запроса)")
-    candidates: List[CandidateScore] = Field(
-        ..., description="Список кандидатов с флагом соответствия по данному акценту"
-    )
-
-
-class NormIDs(BaseModel):
-    """Структурированный ответ LLM с нормализованными/выбранными id кандидатов."""
-    candidates: List[uuid.UUID] = Field(
-        ..., description="Список id кандидатов, которые подходят под запрос"
-    )
 
 
 __all__ = [
@@ -97,7 +117,4 @@ __all__ = [
     "CandidateORM",
     "CandidateOut",
     "Candidate",
-    "CandidateScore",
-    "TopCandidates",
-    "NormIDs",
 ]
