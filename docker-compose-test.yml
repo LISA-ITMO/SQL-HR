@@ -1,9 +1,47 @@
 services:
+  vllm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: vllm
+
+    mem_limit: 16g
+    memswap_limit: 16g
+    restart: unless-stopped
+
+    volumes:
+      - ./hf-cache:/root/.cache
+
+    command:
+      - --model
+      - /root/.cache/llama.cpp/Qwen2.5-7B-Instruct.Q4_K_S.gguf
+
+      - --alias
+      - ${LLAMA_MODEL:-qwen2.5-7b-instruct-q4ks}
+
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+
+      - --threads
+      - ${LLAMA_THREADS:-16}
+      - --ctx-size
+      - ${LLAMA_CTX:-8192}
+      - --batch-size
+      - ${LLAMA_BATCH:-256}
+      - --parallel
+      - ${LLAMA_PARALLEL:-2}
+      - --jinja
+
+    ports:
+      - "${LLAMA_HOST_PORT:-18001}:8001"
+
 
   agent_server:
     build:
       context: ./agent_server
     depends_on:
+      vllm:
+        condition: service_started
       postgres:
         condition: service_healthy
     env_file:

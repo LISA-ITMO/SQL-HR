@@ -9,11 +9,13 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY . ./
-# каталогу конфигов Streamlit нужны права записи у пользователя app
-RUN mkdir -p /app/.streamlit && chown -R app:app /app/.streamlit
+# каталогу конфигов Streamlit и HOME нужны права записи у пользователя app
+RUN mkdir -p /app/.streamlit /home/app \
+    && chown -R app:app /app/.streamlit /home/app
 
 USER app
 
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/home/app
 
 CMD ["streamlit", "run", "chat.py"]

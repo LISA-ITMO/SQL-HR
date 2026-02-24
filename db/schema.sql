@@ -3,19 +3,38 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE candidates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
+    date_received DATE,
+    last_name TEXT,
+    first_name TEXT,
+    middle_name TEXT,
+    previous_last_name TEXT,
     sex TEXT,
-    age INTEGER,
-    expected_salary_rub INTEGER,
-    desired_position TEXT,
-    city TEXT,
-    ready_to_relocate BOOLEAN,
-    ready_for_business_trips BOOLEAN,
-    employment_type TEXT,
-    work_schedule TEXT,
-    work_experience TEXT,
-    last_company TEXT,
-    last_job_title TEXT,
-    education_level_and_university TEXT,
-    resume_updated_at TIMESTAMP,
-    has_car BOOLEAN
+    birth_date DATE,
+    birth_place TEXT,
+    snils TEXT,
+    passport_number TEXT,
+    passport_issued TEXT,
+
+    phone_mobile TEXT,
+    phone_2 TEXT,
+    phone_3 TEXT,
+    email_1 TEXT,
+    email_2 TEXT,
+    email_upgo TEXT,
+
+    residence_area TEXT,
+
+    appointment_date DATE,
+    dismissal_date DATE,
+    confirmed_experience_years NUMERIC(6,1),
+
+    source_info TEXT,
+
+    education_text TEXT,
+    education_count INTEGER,
+    work_text TEXT,
+    extra_info_text TEXT,
+    status TEXT,
+    ready_to_work TEXT,
+    citizenship TEXT
 );

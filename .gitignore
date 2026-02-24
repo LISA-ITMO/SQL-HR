@@ -1,4 +1,4 @@
 .env
 hf-cache/
 results/
-data/
+db/postgres/
