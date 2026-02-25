@@ -382,8 +382,7 @@ def _dedupe_scores(items: List[CandidateScore]) -> List[CandidateScore]:
         deduped.append(item)
     return deduped
 
-
-def node_rate_candidates(state: State, llm, top_n: int = 5) -> dict:
+def node_rate_candidates(state: State, gpu_llm, top_n: int = 5) -> dict:
     """
     Ранжирует кандидатов силами LLM:
     - собирает плоский список кандидатов из state["raw_candidates"];
@@ -392,41 +391,38 @@ def node_rate_candidates(state: State, llm, top_n: int = 5) -> dict:
     Если что-то пошло не так — фолбэк: approved сначала, затем прочие.
     """
     # 1) Дедуп по id и объединение признака approved (OR между группами/акцентами).
-    items_by_id: dict[uuid.UUID, dict] = {}
+    items_by_id = {}
     for group in state.get("raw_candidates", []):
         for cs in group.candidates:
             cid = cs.candidate.id
             if cid not in items_by_id:
-                items_by_id[cid] = {"candidate": cs.candidate, "approved": bool(cs.approved)}
+                items_by_id[cid] = {
+                    "candidate": cs.candidate, 
+                    "approved": bool(cs.approved)
+                }
             else:
                 items_by_id[cid]["approved"] = items_by_id[cid]["approved"] or bool(cs.approved)
 
     if not items_by_id:
-        logger.info("node_rate_candidates: nothing to rank")
         return {"ranked": []}
 
     # 2) Подготовка компактного JSON для LLM (не раздуваем контекст).
-    def _short(txt: Optional[str], limit: int = 500) -> Optional[str]:
-        if not txt:
-            return txt
-        return txt if len(txt) <= limit else (txt[:limit] + "…")
 
     candidates_for_llm = [{
         "id": str(cid),
         "approved": item["approved"],
         "desired_position": item["candidate"].desired_position,
         "city": item["candidate"].city,
+        "expected_salary_rub": item["candidate"].work_experience,
         "expected_salary_rub": item["candidate"].expected_salary_rub,
-        "resume_updated_at": item["candidate"].resume_updated_at.isoformat() if item["candidate"].resume_updated_at else None,
-        "work_experience": _short(item["candidate"].work_experience),
     } for cid, item in items_by_id.items()]
 
     # 3) Просим LLM вернуть строго NormIDs (до top_n uuid'ов, только из данного списка).
     sys = SystemMessage(content=(
-        "Ты — ассистент рекрутера. По списку кандидатов выбери ДО 10 самых релевантных под исходный запрос. "
-        "Сильный сигнал — approved=True; также учитывай позицию, город, зарплату, краткое описание опыта. "
-        f"Верни строго JSON модели NormIDs: {{ \"candidates\": [<uuid>, ...] }}, максимум {top_n} штук, "
-        "только из переданных id, без придуманных значений и без дублей."
+        "Ты — ведущий IT-рекрутер. Твоя задача — провести экспертную оценку кандидатов. "
+        "В отличие от базового фильтра, тебе предоставлен ПОЛНЫЙ текст опыта работы. "
+        "Проанализируй не только ключевые слова, но и сложность проектов, реальный стек и достижения. "
+        "Верни строго JSON модели NormIDs: { \"candidates\": [<uuid>, ...] }."
     ))
     user = HumanMessage(content=(
         f"Исходный запрос: {state.get('task','')}\n"
@@ -435,19 +431,22 @@ def node_rate_candidates(state: State, llm, top_n: int = 5) -> dict:
     ))
 
     try:
-        structured = llm.with_structured_output(NormIDs)
+        structured = gpu_llm.with_structured_output(NormIDs)
         out: NormIDs = structured.invoke([sys, user])
 
         # 4) Нормализуем: оставляем только существующие id, сохраняем порядок, режем до top_n.
         allowed = {str(k) for k in items_by_id.keys()}
-        seen: set[str] = set()
-        ordered_ids: list[str] = []
-        for cid in map(str, out.candidates):
-            if cid in allowed and cid not in seen:
-                ordered_ids.append(cid)
-                seen.add(cid)
-            if len(ordered_ids) >= top_n:
-                break
+        ordered_ids: [str(cid) for cid in out.candidates if cid in allowed][:top_n]
+        ranked = [
+            CandidateScore(candidate=items_by_id[uuid.UUID(cid)]["candidate"], approved=True) 
+            for cid in ordered_ids
+        ]
+        logger.info("gpu ranking: Экспертный отбор завершен, выбрано %d кандидатов", len(ranked))
+        return {"ranked": ranked}
+
+        except Exception as e:
+            logger.error(f"gpu Ranking failed: {e}. falling back to standard node_rate_candidates.")
+        return {} 
 
         # 5) Собираем итоговый ranked: выбранных LLM помечаем approved=True.
         ranked: List[CandidateScore] = []
