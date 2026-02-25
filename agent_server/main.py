@@ -67,56 +67,41 @@ engine = create_engine(
 
 class API():
     llm = None
+    gpu_llm = None
 
     def __init__(self):
-        use_vllm = os.getenv("USE_VLLM", "True") == "True"
-
-        vllm_model = os.getenv("VLLM_MODEL")
-        vllm_key = os.getenv("VLLM_KEY")
-        vllm_base_url = os.getenv("VLLM_BASE_URL", "http://vllm:8001/v1")
-
-        proxy_model = os.getenv("PROXY_MODEL")
-        proxy_api_key = os.getenv("PROXY_API_KEY")
-        proxy_base_url = os.getenv("PROXY_BASE_URL", "https://api.openai.com/v1")
-
-        llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
-
-        logger.info(
-            "LLM init: use_vllm=%s, vllm_model=%r, vllm_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
-            use_vllm,
-            vllm_model,
-            vllm_base_url,
-            proxy_model,
-            proxy_base_url,
-            bool(proxy_api_key),
-            llm_max_tokens,
-        )
-
+        gpu_max_tokens = int(os.getenv("GPU_LLM_MAX_TOKENS", "4096"))
         if use_vllm:
             if not vllm_model:
                 logger.error("USE_VLLM=true, но VLLM_MODEL не задан")
                 raise RuntimeError("USE_VLLM=true, но VLLM_MODEL не задан")
-            self.llm = ChatOpenAI(
+
+             self.llm = ChatOpenAI(
                 model=vllm_model,
                 api_key=vllm_key,
                 base_url=vllm_base_url,
                 temperature=0,
                 max_tokens=llm_max_tokens,
             )
-        else:
-            if not proxy_model:
-                logger.error("USE_VLLM=false, но PROXY_MODEL не задан")
-                raise RuntimeError("USE_VLLM=false, но PROXY_MODEL не задан")
-            self.llm = ChatOpenAI(
+            self.gpu_llm = ChatOpenAI(
+                model=vllm_model,
+                api_key=vllm_key,
+                base_url=vllm_base_url,
+                temperature=0,
+                max_tokens=gpu_max_tokens,
+            )
+            else:
+                self.llm = ChatOpenAI(
                 model=proxy_model,
                 api_key=proxy_api_key,
                 base_url=proxy_base_url,
                 temperature=0,
                 max_tokens=llm_max_tokens,
             )
+            self.gpu_llm = self.llm 
 
 api = API()
-llm = api.llm
+gpu_llm = api.gpu_llm
 
 
 def fetch_candidates_by_ids(engine, ids: List[UUID | str]) -> Dict[str, Dict[str, Any]]:
@@ -181,7 +166,7 @@ def _node_add_candidates(state: CandidateState) -> CandidateState:
 
 
 def _node_rate_candidates(state: CandidateState) -> CandidateState:
-    return node_rate_candidates(state, llm, top_n=10)
+    return node_rate_candidates(state,  gpu_llm, top_n=10)
 
 
 def _node_return_candidates(state: CandidateState) -> CandidateState:
