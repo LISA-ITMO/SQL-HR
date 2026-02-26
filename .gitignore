@@ -1,4 +1,5 @@
 .env
+.claude/
 hf-cache/
 results/
 db/postgres/

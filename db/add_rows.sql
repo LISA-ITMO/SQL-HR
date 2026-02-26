@@ -453,7 +453,7 @@ SELECT
                   OR LOWER(NULLIF("Паспорт (кем и когда выдан)", '')) LIKE '%россии%'
                   OR LOWER(NULLIF("Паспорт (кем и когда выдан)", '')) LIKE '%рф%'
                 THEN 'РФ'
-                ELSE 'другое'
+                ELSE NULLIF("Паспорт (кем и когда выдан)", '')
             END
         ELSE NULL
     END

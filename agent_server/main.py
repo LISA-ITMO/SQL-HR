@@ -48,6 +48,7 @@ from prompts import (
     SUB_AGENT_LAST_TRY_PROMPT,
     SUB_AGENT_SYSTEM_PROMPT,
 )
+from reranker import rerank_candidates
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
@@ -482,6 +483,12 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     def _normalize_keyword(value: str) -> str:
         return " ".join(value.lower().strip().split())
 
+    def _normalize_filter_value(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        return normalized or None
+
     def _clean_keywords(values: Optional[List[str]]) -> List[str]:
         cleaned: List[str] = []
         for raw in values or []:
@@ -566,21 +573,31 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     if spec.confirmed_experience_years_min is not None:
         clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
 
-    if spec.citizenship is not None:
-        if spec.citizenship.lower() == 'рф':
+    citizenship_filter = _normalize_filter_value(spec.citizenship)
+    if citizenship_filter is not None:
+        if citizenship_filter == 'рф':
             clauses.append(func.lower(C.citizenship) == 'рф')
-        elif spec.citizenship.lower() == 'другое':
-            clauses.append(func.lower(C.citizenship) == 'другое')
+        elif citizenship_filter == 'другое':
+            clauses.append(
+                and_(
+                    C.citizenship.is_not(None),
+                    func.lower(C.citizenship) != 'рф',
+                )
+            )
+        else:
+            clauses.append(func.coalesce(C.citizenship, "").ilike(f"%{citizenship_filter}%"))
     else:
         clauses.append(func.lower(C.citizenship) == 'рф')
 
-    if spec.status is not None:
-        clauses.append(func.lower(C.status) == spec.status)
+    status_filter = _normalize_filter_value(spec.status)
+    if status_filter is not None:
+        clauses.append(func.lower(C.status) == status_filter)
     else:
         clauses.append(func.lower(C.status) == 'резервист')
 
-    if spec.ready_to_work is not None:
-        clauses.append(func.lower(C.ready_to_work) == spec.ready_to_work)
+    ready_to_work_filter = _normalize_filter_value(spec.ready_to_work)
+    if ready_to_work_filter is not None:
+        clauses.append(func.lower(C.ready_to_work) == ready_to_work_filter)
     else:
         clauses.append(func.lower(C.ready_to_work) == 'годен')
 
@@ -596,6 +613,7 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
             func.coalesce(C.education_text, "").ilike(pattern),
             func.coalesce(C.work_text, "").ilike(pattern),
             func.coalesce(C.extra_info_text, "").ilike(pattern),
+            func.coalesce(C.citizenship, "").ilike(pattern),
         )
 
     for kw in keywords_all:
@@ -614,7 +632,7 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         stmt = stmt.where(and_(*clauses))
     if int(spec.offset or 0) > 0:
         stmt = stmt.offset(int(spec.offset))
-    stmt = stmt.limit(5)
+    stmt = stmt.limit(20)
 
     rows = session.scalars(stmt).all()
     return [CandidateOut.model_validate(r) for r in rows]
@@ -722,6 +740,7 @@ def _db_search_impl(
     match_spec: QuerySpec,
     fallback_spec: QuerySpec | QuerySpecLite,
     session_id: Optional[str],
+    query: Optional[str] = None,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     logger.info(
         "db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s",
@@ -759,7 +778,7 @@ def _db_search_impl(
                 "email_1": c.email_1,
                 "email_2": c.email_2,
                 "email_upgo": c.email_upgo,
-                "status": c.staus,
+                "status": c.status,
                 "ready_to_work": c.ready_to_work,
                 "citizenship": c.citizenship,
             }
@@ -801,9 +820,21 @@ def _db_search_impl(
             best_candidates = add_unique_candidates(best_candidates, match_full)
         if len(best_candidates) < 4:
             best_candidates = add_unique_candidates(best_candidates, fallback_full)
-        best_candidates = best_candidates[:4]
+        best_candidates = best_candidates[:20]
     else:
         best_candidates = ideal_full or match_full or fallback_full
+
+    # Реранкинг кандидатов через CrossEncoder
+    top_k = int(os.getenv("RERANKER_TOP_K", "5"))
+    if query and best_candidates:
+        rerank_start = time.perf_counter()
+        best_candidates = rerank_candidates(query, best_candidates, top_k=top_k)
+        rerank_elapsed = time.perf_counter() - rerank_start
+        _append_speed_report(session_id, "rerank", rerank_elapsed)
+        logger.info("reranking done in %.3f sec, returned %s candidates", rerank_elapsed, len(best_candidates))
+    else:
+        best_candidates = best_candidates[:top_k]
+
     if session_id and session_id in SESSIONS:
         SESSIONS[session_id]["pending_candidates"] = best_candidates
         SESSIONS[session_id]["pending_candidate_ids"] = [
@@ -909,11 +940,13 @@ def sub_agent_node(state: SubState) -> SubState:
     match_spec = response.match_spec
     fallback_spec = response.fallback_spec
     query_dump = response.model_dump(mode="json")
+    task = state.get("task")
     result, best_candidates = _db_search_impl(
         ideal_spec=ideal_spec,
         match_spec=match_spec,
         fallback_spec=fallback_spec,
         session_id=session_id,
+        query=task,
     )
     next_state = {
         "messages": [

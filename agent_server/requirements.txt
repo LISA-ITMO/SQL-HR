@@ -5,3 +5,4 @@ langchain_community
 langchain-openai
 fastapi
 uvicorn
+sentence-transformers>=2.2.0
