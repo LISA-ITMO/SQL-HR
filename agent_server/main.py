@@ -345,6 +345,10 @@ class QuerySpec(BaseModel):
         default_factory=list,
         description="Ключевые слова, которые не должны встречаться в текстовых полях.",
     )
+    education_keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
+    )
     offset: int = Field(
         0,
         ge=0,
@@ -397,6 +401,10 @@ class QuerySpecLite(BaseModel):
     keywords_not: List[str] = Field(
         default_factory=list,
         description="Ключевые слова, которые не должны встречаться в текстовых полях.",
+    )
+    education_keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
     )
     offset: int = Field(
         0,
@@ -549,6 +557,7 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     ]
     keywords_any = _clean_keywords(spec.keywords_any)
     keywords_not = _clean_keywords(spec.keywords_not)
+    education_keywords_any = _clean_keywords(getattr(spec, "education_keywords_any", None))
 
     clauses = []
     age_from = getattr(spec, "age_from", None)
@@ -616,6 +625,10 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
             func.coalesce(C.citizenship, "").ilike(pattern),
         )
 
+    def _education_text_match(keyword: str):
+        pattern = f"%{keyword}%"
+        return func.coalesce(C.education_text, "").ilike(pattern)
+
     for kw in keywords_all:
         clauses.append(_text_match(kw))
 
@@ -626,6 +639,10 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     not_clauses = [~_text_match(kw) for kw in keywords_not]
     if not_clauses:
         clauses.append(and_(*not_clauses))
+
+    education_any_clauses = [_education_text_match(kw) for kw in education_keywords_any]
+    if education_any_clauses:
+        clauses.append(or_(*education_any_clauses))
 
     stmt = select(C)
     if clauses:
@@ -743,10 +760,13 @@ def _db_search_impl(
     query: Optional[str] = None,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     logger.info(
-        "db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s",
+        "db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s ideal_education_keywords_any=%s match_education_keywords_any=%s fallback_education_keywords_any=%s",
         len(ideal_spec.keywords_any or []),
         len(match_spec.keywords_any or []),
         len(fallback_spec.keywords_any or []),
+        len(getattr(ideal_spec, "education_keywords_any", None) or []),
+        len(getattr(match_spec, "education_keywords_any", None) or []),
+        len(getattr(fallback_spec, "education_keywords_any", None) or []),
     )
 
     def _run_query(spec: QuerySpec | QuerySpecLite) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
