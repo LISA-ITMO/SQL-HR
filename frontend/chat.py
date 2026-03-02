@@ -18,6 +18,10 @@ if "pending_future" not in st.session_state:
     st.session_state.pending_future = None
 if "stop_requested" not in st.session_state:
     st.session_state.stop_requested = False
+if "last_polled_candidates" not in st.session_state:
+    st.session_state.last_polled_candidates = []
+if "final_fragment_message" not in st.session_state:
+    st.session_state.final_fragment_message = None
 
 st.set_page_config(page_title="SQL-HR", layout="wide")
 
@@ -157,19 +161,27 @@ def _finalize_pending_response():
         st.session_state.session_id = r_json.get("session_id", st.session_state.session_id)
         reply = r_json.get("answer", "")
         candidates = _normalize_candidates(r_json.get("candidates", []) or [])
+        if not candidates:
+            polled_once, _ = _poll_candidates(st.session_state.session_id)
+            if polled_once:
+                candidates = _normalize_candidates(polled_once)
+        if not candidates:
+            candidates = _normalize_candidates(st.session_state.last_polled_candidates or [])
     except Exception as e:
         reply = f"Ошибка при запросе к серверу: {e}"
         candidates = []
     st.session_state.pending_future = None
     st.session_state.stop_requested = False
     if reply or candidates:
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": reply,
-                "candidates": candidates,
-            }
-        )
+        final_message = {
+            "role": "assistant",
+            "content": reply,
+            "candidates": candidates,
+        }
+        st.session_state.messages.append(final_message)
+        st.session_state.final_fragment_message = final_message
+    else:
+        st.session_state.final_fragment_message = None
     return True
 
 
@@ -195,12 +207,23 @@ if pending_in_flight:
     def _search_status():
         pending_future = st.session_state.pending_future
         if not pending_future:
+            final_message = st.session_state.final_fragment_message
+            if isinstance(final_message, dict):
+                with st.chat_message("assistant"):
+                    _render_candidates(final_message.get("candidates") or [])
+                    st.markdown(final_message.get("content") or "")
             return
         if pending_future.done():
-            if _finalize_pending_response():
-                st.rerun()
+            _finalize_pending_response()
+            final_message = st.session_state.final_fragment_message
+            if isinstance(final_message, dict):
+                with st.chat_message("assistant"):
+                    _render_candidates(final_message.get("candidates") or [])
+                    st.markdown(final_message.get("content") or "")
+            st.session_state.last_polled_candidates = []
             return
         polled, is_pending = _poll_candidates(st.session_state.session_id)
+        st.session_state.last_polled_candidates = polled
         with st.chat_message("assistant"):
             _render_candidates(polled)
             if not is_pending:
@@ -219,9 +242,19 @@ if pending_in_flight:
 
     _search_status()
 
-prompt = st.chat_input("Введите запрос", disabled=pending_in_flight)
+prompt = st.chat_input("Введите запрос")
 
 if prompt:
+    active_future = st.session_state.pending_future
+    if active_future is not None and not active_future.done():
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": "Поиск еще выполняется. Дождитесь завершения текущего запроса или остановите поиск.",
+            }
+        )
+        st.rerun()
+
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     if not SERVER_URL:
@@ -236,6 +269,8 @@ if prompt:
             if not st.session_state.session_id:
                 st.session_state.session_id = str(uuid.uuid4())
             payload = {"session_id": st.session_state.session_id, "message": prompt}
+            st.session_state.last_polled_candidates = []
+            st.session_state.final_fragment_message = None
             st.session_state.pending_future = EXECUTOR.submit(_post_chat, payload)
             st.session_state.stop_requested = False
         except Exception as e:

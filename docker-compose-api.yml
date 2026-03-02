@@ -9,6 +9,10 @@ services:
     env_file:
       - .env
     environment:
+      HOME: /home/app
+      HF_HOME: /home/app/hf-cache
+      HF_HUB_CACHE: /home/app/hf-cache/hub
+      TRANSFORMERS_CACHE: /home/app/hf-cache/transformers
       USE_LLAMA: ${USE_LLAMA:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm:8001/v1}
       LLAMA_MODEL: ${LLAMA_MODEL:-Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4}
@@ -21,6 +25,7 @@ services:
       REPORT_DIR: /results
     volumes:
       - ${RESULTS_DIR:-./results}:/results
+      - hf_cache_app:/home/app/hf-cache
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\""]
       interval: 15s
@@ -81,3 +86,4 @@ services:
 
 volumes:
   pgadmin_data:
+  hf_cache_app:

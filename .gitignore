@@ -3,3 +3,11 @@
 hf-cache/
 results/
 db/postgres/
+
+data/*
+
+!data/candidates_synth.csv
+!data/candidates_real.csv
+
+__pycache__/
+*.pyc
