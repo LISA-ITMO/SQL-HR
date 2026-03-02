@@ -4,6 +4,7 @@ import ast
 import json
 import logging
 import os
+import re
 import uuid
 import time
 import functools
@@ -259,7 +260,7 @@ class API:
         proxy_api_key = os.getenv("PROXY_API_KEY")
         proxy_base_url = os.getenv("PROXY_BASE_URL", "https://api.openai.com/v1")
 
-        llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+        llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
 
         logger.info(
             "LLM init: use_llama=%s, llama_model=%r, llama_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
@@ -507,6 +508,14 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
                 cleaned.append(value)
         return cleaned
 
+    def _is_short_education_alias(value: str) -> bool:
+        normalized = _normalize_keyword(value)
+        if " " in normalized:
+            return False
+        token = normalized.replace(".", "").replace("-", "")
+        # Keep compact abbreviations and common short aliases like "мфти", "лэти", "физтех".
+        return len(token) <= 8
+
     keywords_all_blocklist = {
         "опыт",
         "опыт работы",
@@ -549,15 +558,60 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         "окончание",
     }
     keywords_all_blocklist = { _normalize_keyword(x) for x in keywords_all_blocklist }
+    education_keywords_any_blocklist = {
+        "институт",
+        "университет",
+        "вуз",
+        "высшее",
+        "образование",
+        "диплом",
+        "факультет",
+        "кафедра",
+        "специальность",
+        "квалификация",
+        "направление",
+    }
+    education_keywords_any_blocklist = { _normalize_keyword(x) for x in education_keywords_any_blocklist }
 
     keywords_all = [
         kw
         for kw in _clean_keywords(getattr(spec, "keywords_all", None))
         if _normalize_keyword(kw) not in keywords_all_blocklist
     ]
-    keywords_any = _clean_keywords(spec.keywords_any)
-    keywords_not = _clean_keywords(spec.keywords_not)
-    education_keywords_any = _clean_keywords(getattr(spec, "education_keywords_any", None))
+    raw_keywords_any = _clean_keywords(spec.keywords_any)
+    raw_keywords_not = _clean_keywords(spec.keywords_not)
+    raw_education_keywords_any = [
+        kw
+        for kw in _clean_keywords(getattr(spec, "education_keywords_any", None))
+        if _normalize_keyword(kw) not in education_keywords_any_blocklist
+    ]
+    # Guardrail: in education_keywords_any keep full names (phrases) and compact aliases only.
+    education_keywords_any = []
+    for kw in raw_education_keywords_any:
+        normalized = _normalize_keyword(kw)
+        if " " not in normalized and not _is_short_education_alias(normalized):
+            continue
+        education_keywords_any.append(kw)
+
+    # Guardrail: educational terms must stay only in education_keywords_any.
+    education_terms = {_normalize_keyword(x) for x in education_keywords_any}
+    for edu_kw in list(education_terms):
+        if " " in edu_kw:
+            for token in re.split(r"[\s\-]+", edu_kw):
+                token = token.strip()
+                if token and len(token) >= 4:
+                    education_terms.add(token)
+
+    keywords_any = [
+        kw
+        for kw in raw_keywords_any
+        if _normalize_keyword(kw) not in education_terms
+    ]
+    keywords_not = [
+        kw
+        for kw in raw_keywords_not
+        if _normalize_keyword(kw) not in education_terms
+    ]
 
     clauses = []
     age_from = getattr(spec, "age_from", None)
@@ -856,9 +910,13 @@ def _db_search_impl(
         best_candidates = best_candidates[:top_k]
 
     if session_id and session_id in SESSIONS:
-        SESSIONS[session_id]["pending_candidates"] = best_candidates
-        SESSIONS[session_id]["pending_candidate_ids"] = [
-            str(item.get("id")) for item in best_candidates if isinstance(item, dict) and item.get("id")
+        session_data = SESSIONS[session_id]
+        prev_pending = list(session_data.get("pending_candidates") or [])
+        # Keep already found candidates and append only new IDs to the bottom.
+        merged_pending = add_unique_candidates(prev_pending, best_candidates)
+        session_data["pending_candidates"] = merged_pending
+        session_data["pending_candidate_ids"] = [
+            str(item.get("id")) for item in merged_pending if isinstance(item, dict) and item.get("id")
         ]
     return result, best_candidates
 
@@ -954,7 +1012,35 @@ def sub_agent_node(state: SubState) -> SubState:
     if iters_left <= 1:
         msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
     llm_structured = llm.with_structured_output(QuerySpecBundle)
-    response = llm_structured.invoke(msgs)
+    try:
+        response = llm_structured.invoke(msgs)
+    except Exception as exc:
+        # Some providers return truncated JSON for structured output when
+        # generation hits the completion length limit.
+        if exc.__class__.__name__ != "LengthFinishReasonError":
+            raise
+        logger.warning("sub_agent_node structured output length limit reached; retrying with compact context")
+        retry_msgs: List[AnyMessage] = [
+            SystemMessage(content=SUB_AGENT_SYSTEM_PROMPT),
+            HumanMessage(content=str(state.get("task") or "")),
+            SystemMessage(content=f"Итераций осталось: {iters_left}"),
+            SystemMessage(
+                content=(
+                    "Верни ТОЛЬКО валидный JSON QuerySpecBundle."
+                    " Не добавляй пояснений и лишний текст."
+                )
+            ),
+        ]
+        if last_bundle:
+            retry_msgs.append(
+                SystemMessage(
+                    content=(
+                        "Новый QuerySpecBundle должен отличаться минимум одним параметром в каждом блоке "
+                        "ideal_spec/match_spec/fallback_spec."
+                    )
+                )
+            )
+        response = llm_structured.invoke(retry_msgs)
     session_id = state.get("session_id")
     ideal_spec = response.ideal_spec
     match_spec = response.match_spec
@@ -968,10 +1054,16 @@ def sub_agent_node(state: SubState) -> SubState:
         session_id=session_id,
         query=task,
     )
+    compact_result = {
+        "summary": result.get("summary", ""),
+        "ideal_count": int((result.get("ideal") or {}).get("count", 0)),
+        "match_count": int((result.get("match") or {}).get("count", 0)),
+        "fallback_count": int((result.get("fallback") or {}).get("count", 0)),
+    }
     next_state = {
         "messages": [
             AIMessage(content=f"QuerySpec:\n{json.dumps(query_dump, ensure_ascii=False)}"),
-            AIMessage(content=json.dumps(result, ensure_ascii=False)),
+            AIMessage(content=json.dumps(compact_result, ensure_ascii=False)),
         ],
         "iterations_left": int(state.get("iterations_left", 0)) - 1,
         "session_id": state.get("session_id"),
@@ -1140,6 +1232,13 @@ def find_candidates(
                 "session_id": session_id,
             }
         )
+    except Exception:
+        logger.exception("tool=find_candidates failed in sub-graph")
+        result = {
+            "report": "Поиск временно недоступен: ошибка генерации фильтров. Попробуйте упростить запрос.",
+            "candidates": [],
+            "cancelled": False,
+        }
     finally:
         _set_search_in_progress(session_id, False)
     payload = {
