@@ -250,26 +250,17 @@ class API:
     llm: ChatOpenAI
 
     def __init__(self) -> None:
-        use_llama = os.getenv("USE_LLAMA", "True") == "True"
-
-        llama_model = os.getenv("LLAMA_MODEL")
-        llama_key = os.getenv("LLAMA_KEY")
-        llama_base_url = os.getenv("LLAMA_BASE_URL", "http://vllm:8001/v1")
-
-        proxy_model = os.getenv("PROXY_MODEL")
-        proxy_api_key = os.getenv("PROXY_API_KEY")
-        proxy_base_url = os.getenv("PROXY_BASE_URL", "https://api.openai.com/v1")
+        model = os.getenv("MODEL")
+        api_key = os.getenv("API_KEY")
+        base_url = os.getenv("BASE_URL", "http://vllm:8001/v1")
 
         llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
 
         logger.info(
-            "LLM init: use_llama=%s, llama_model=%r, llama_base_url=%r, proxy_model=%r, proxy_base_url=%r, proxy_key_set=%s, llm_max_tokens=%s",
-            use_llama,
-            llama_model,
-            llama_base_url,
-            proxy_model,
-            proxy_base_url,
-            bool(proxy_api_key),
+            "LLM init: model=%r, base_url=%r, api_key_set=%s, llm_max_tokens=%s",
+            model,
+            base_url,
+            bool(api_key),
             llm_max_tokens,
         )
 
@@ -278,28 +269,17 @@ class API:
         if disable_thinking:
             extra["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
-        if use_llama:
-            if not llama_model:
-                raise RuntimeError("USE_LLAMA=true, но LLAMA_MODEL не задан")
-            self.llm = ChatOpenAI(
-                model=llama_model,
-                api_key=llama_key,
-                base_url=llama_base_url,
-                temperature=0,
-                max_tokens=llm_max_tokens,
-                **extra,
-            )
-        else:
-            if not proxy_model:
-                raise RuntimeError("USE_LLAMA=false, но PROXY_MODEL не задан")
-            self.llm = ChatOpenAI(
-                model=proxy_model,
-                api_key=proxy_api_key,
-                base_url=proxy_base_url,
-                temperature=0,
-                max_tokens=llm_max_tokens,
-                **extra,
-            )
+        if not model:
+            raise RuntimeError("MODEL не задан")
+
+        self.llm = ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0,
+            max_tokens=llm_max_tokens,
+            **extra,
+        )
 
 
 api = API()
