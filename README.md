@@ -6,8 +6,8 @@ SQL-HR — сервис подбора кандидатов из CSV-базы с
 
 1. Клонировать репозиторий:
 ```bash
-git clone -b prod-ready https://github.com/LISA-ITMO/SQL-HR
-cd SQL-HR
+git clone -b prod-ready https://github.com/JGSnapp/SQL-prod2
+cd SQL-prod2
 ```
 
 2. Скопировать `candidates.csv` в папку `data/`.
