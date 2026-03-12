@@ -36,3 +36,24 @@ docker-compose down
 ```bash
 docker-compose up --build
 ```
+
+## Docker Hub (обход ошибки сборки torch)
+
+1. На машине, где сборка проходит, указать тег в Docker Hub:
+```bash
+$env:AGENT_SERVER_IMAGE="DOCKERHUB_USERNAME/sql-prod2-agent_server:torch-cpu"
+```
+
+2. Авторизоваться и отправить образ:
+```bash
+docker login
+docker compose build agent_server
+docker compose push agent_server
+```
+
+3. На машине, где падает сборка `torch`, использовать готовый образ:
+```bash
+$env:AGENT_SERVER_IMAGE="DOCKERHUB_USERNAME/sql-prod2-agent_server:torch-cpu"
+docker compose pull agent_server
+docker compose up -d --no-build
+```
