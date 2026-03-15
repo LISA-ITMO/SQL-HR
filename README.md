@@ -4,10 +4,13 @@ SQL-HR — сервис подбора кандидатов из CSV-базы с
 
 ## Деплой
 
-1. Клонировать репозиторий:
+1. Клонировать репозиторий и дать разрешения:
 ```bash
 git clone -b prod-ready https://github.com/JGSnapp/SQL-prod2
 cd SQL-prod2
+# Для Linux
+chmod 777 data results
+chmod 755 db
 ```
 
 2. Скопировать `candidates.csv` в папку `data/`.

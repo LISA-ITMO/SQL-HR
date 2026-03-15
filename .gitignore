@@ -1,6 +1,6 @@
 .claude/
 hf-cache/
-results/
+results/*
 db/postgres/
 
 data/*
