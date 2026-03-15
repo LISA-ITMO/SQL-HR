@@ -8,6 +8,8 @@ SQL-HR — сервис подбора кандидатов из CSV-базы с
 ```bash
 git clone -b prod-ready https://github.com/JGSnapp/SQL-prod2
 cd SQL-prod2
+mkdir -p results
+
 # Для Linux
 chmod 777 data results
 chmod 755 db
