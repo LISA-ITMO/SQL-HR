@@ -964,7 +964,7 @@ def sub_agent_node(state: SubState) -> SubState:
         }
     msgs: List[AnyMessage] = list(state.get("messages", []))
     iters_left = int(state.get("iterations_left", 0))
-    msgs.append(SystemMessage(content=f"Итераций осталось: {iters_left}"))
+    msgs.append(HumanMessage(content=f"Итераций осталось: {iters_left}"))
     # Remind the model to change the query on each iteration and show the last bundle.
     last_bundle: Optional[Dict[str, Any]] = None
     for msg in reversed(msgs):
@@ -978,7 +978,7 @@ def sub_agent_node(state: SubState) -> SubState:
                 break
     if last_bundle:
         msgs.append(
-            SystemMessage(
+            HumanMessage(
                 content=(
                     "В прошлой итерации был такой QuerySpecBundle. Новый должен отличаться "
                     "минимум одним параметром в КАЖДОМ из ideal_spec/match_spec/fallback_spec:\n"
@@ -988,7 +988,7 @@ def sub_agent_node(state: SubState) -> SubState:
         )
     # Force selection on the last try.
     if iters_left <= 1:
-        msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
+        msgs.append(HumanMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
     llm_structured = llm.with_structured_output(QuerySpecBundle)
     try:
         response = llm_structured.invoke(msgs)
@@ -1001,8 +1001,8 @@ def sub_agent_node(state: SubState) -> SubState:
         retry_msgs: List[AnyMessage] = [
             SystemMessage(content=SUB_AGENT_SYSTEM_PROMPT),
             HumanMessage(content=str(state.get("task") or "")),
-            SystemMessage(content=f"Итераций осталось: {iters_left}"),
-            SystemMessage(
+            HumanMessage(content=f"Итераций осталось: {iters_left}"),
+            HumanMessage(
                 content=(
                     "Верни ТОЛЬКО валидный JSON QuerySpecBundle."
                     " Не добавляй пояснений и лишний текст."
@@ -1011,7 +1011,7 @@ def sub_agent_node(state: SubState) -> SubState:
         ]
         if last_bundle:
             retry_msgs.append(
-                SystemMessage(
+                HumanMessage(
                     content=(
                         "Новый QuerySpecBundle должен отличаться минимум одним параметром в каждом блоке "
                         "ideal_spec/match_spec/fallback_spec."
