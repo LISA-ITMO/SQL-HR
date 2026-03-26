@@ -297,49 +297,49 @@ SELECT
             CASE
                 WHEN NULLIF("Образование (ВУЗ)", '') IS NOT NULL
                     OR NULLIF("Образование (наименование)", '') IS NOT NULL
-                    OR LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да')
-                    OR LOWER(NULLIF("1 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да')
+                    OR LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
+                    OR LOWER(NULLIF("1 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
                 THEN CONCAT_WS(
                     '; ',
                     CASE WHEN NULLIF("Образование (ВУЗ)", '') IS NOT NULL THEN '1. ВУЗ: ' || "Образование (ВУЗ)" END,
                     CASE WHEN NULLIF("Образование (наименование)", '') IS NOT NULL THEN 'направление: ' || "Образование (наименование)" END,
-                    CASE WHEN LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Есть диплом' END,
-                    CASE WHEN LOWER(NULLIF("1 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Диплом с отличием' END
+                    CASE WHEN LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Есть диплом' END,
+                    CASE WHEN LOWER(NULLIF("1 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Диплом с отличием' END
                 )
             END,
             CASE
                 WHEN NULLIF("2 Образование (ВУЗ)", '') IS NOT NULL
                     OR NULLIF("2 Образование (наименование)", '') IS NOT NULL
-                    OR LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да')
-                    OR LOWER(NULLIF("2 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да')
+                    OR LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
+                    OR LOWER(NULLIF("2 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
                 THEN CONCAT_WS(
                     '; ',
                     CASE WHEN NULLIF("2 Образование (ВУЗ)", '') IS NOT NULL THEN '2. ВУЗ: ' || "2 Образование (ВУЗ)" END,
                     CASE WHEN NULLIF("2 Образование (наименование)", '') IS NOT NULL THEN 'направление: ' || "2 Образование (наименование)" END,
-                    CASE WHEN LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Есть диплом' END,
-                    CASE WHEN LOWER(NULLIF("2 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Диплом с отличием' END
+                    CASE WHEN LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Есть диплом' END,
+                    CASE WHEN LOWER(NULLIF("2 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Диплом с отличием' END
                 )
             END,
             CASE
                 WHEN NULLIF("3 Образование (ВУЗ)", '') IS NOT NULL
                     OR NULLIF("3 Образование (наименование)", '') IS NOT NULL
-                    OR LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да')
-                    OR LOWER(NULLIF("3 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да')
+                    OR LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
+                    OR LOWER(NULLIF("3 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно')
                 THEN CONCAT_WS(
                     '; ',
                     CASE WHEN NULLIF("3 Образование (ВУЗ)", '') IS NOT NULL THEN '3. ВУЗ: ' || "3 Образование (ВУЗ)" END,
                     CASE WHEN NULLIF("3 Образование (наименование)", '') IS NOT NULL THEN 'направление: ' || "3 Образование (наименование)" END,
-                    CASE WHEN LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Есть диплом' END,
-                    CASE WHEN LOWER(NULLIF("3 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да') THEN 'Диплом с отличием' END
+                    CASE WHEN LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Есть диплом' END,
+                    CASE WHEN LOWER(NULLIF("3 Диплом с отличием", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 'Диплом с отличием' END
                 )
             END
         ),
         ''
     ),
     (
-        CASE WHEN LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 1 ELSE 0 END
-        + CASE WHEN LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 1 ELSE 0 END
-        + CASE WHEN LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да') THEN 1 ELSE 0 END
+        CASE WHEN LOWER(NULLIF("Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 1 ELSE 0 END
+        + CASE WHEN LOWER(NULLIF("2 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 1 ELSE 0 END
+        + CASE WHEN LOWER(NULLIF("3 Наличие диплома", '')) IN ('true', 't', '1', 'yes', 'да', 'истина', 'верно') THEN 1 ELSE 0 END
     )::int,
     NULLIF(
         CONCAT_WS(
