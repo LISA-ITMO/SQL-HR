@@ -10,4 +10,8 @@ data/*
 !data/candidates_real.csv
 
 __pycache__/
-*.pyc
+validation_dataset/raw/candidates.csv
+.DS_Store
+validation_dataset/.DS_Store
+validation_dataset/sql-hr/.DS_Store
+validation_dataset/raw/candidates.csv
