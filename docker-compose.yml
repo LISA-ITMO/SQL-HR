@@ -1,6 +1,8 @@
 services:
 
   agent_server:
+    build:
+      context: ./agent_server
     image: jgsnapp/sql-hr-agent-server:latest
     container_name: agent_server
     restart: unless-stopped
@@ -11,6 +13,7 @@ services:
         condition: service_healthy
     volumes:
       - ${RESULTS_DIR:-./results}:/results
+      - ${CROSS_ENCODER_CACHE_HOST_DIR:-./cross-encoder}:${CROSS_ENCODER_CACHE_DIR:-/models/cross-encoder}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\""]
       interval: 15s

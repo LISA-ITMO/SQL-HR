@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from huggingface_hub import snapshot_download
 from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
@@ -23,8 +26,19 @@ class CandidateReranker:
     _instance: Optional[CandidateReranker] = None
     _model: Optional[CrossEncoder] = None
     _model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    _cache_dir: Optional[str] = None
     _max_length: int = 512
     _enabled: bool = True
+    _required_files: Tuple[str, ...] = (
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.txt",
+        "sentencepiece.bpe.model",
+        "spiece.model",
+    )
 
     def __new__(cls) -> CandidateReranker:
         if cls._instance is None:
@@ -38,6 +52,7 @@ class CandidateReranker:
         # Загружаем конфигурацию из переменных окружения
         self._enabled = os.getenv("ENABLE_RERANKING", "True").lower() == "true"
         self._model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        self._cache_dir = os.getenv("CROSS_ENCODER_CACHE_DIR", "/models/cross-encoder")
         self._max_length = int(os.getenv("RERANKER_MAX_LENGTH", "512"))
 
         if not self._enabled:
@@ -45,18 +60,59 @@ class CandidateReranker:
             return
 
         logger.info(
-            "reranker init model=%s max_length=%s",
+            "reranker init model=%s max_length=%s cache_dir=%s",
             self._model_name,
             self._max_length,
+            self._cache_dir,
         )
         try:
             start_time = time.perf_counter()
-            self._model = CrossEncoder(self._model_name, max_length=self._max_length)
+            model_path = self._ensure_local_model_dir()
+            self._model = CrossEncoder(
+                model_path,
+                max_length=self._max_length,
+                local_files_only=True,
+            )
             elapsed = time.perf_counter() - start_time
             logger.info("reranker loaded in %.2f sec", elapsed)
         except Exception:
             logger.exception("reranker failed to load model")
             self._enabled = False
+
+    def _ensure_local_model_dir(self) -> str:
+        """Downloads only required model files into a plain local directory."""
+        if not self._cache_dir:
+            raise ValueError("CROSS_ENCODER_CACHE_DIR is not set")
+
+        model_dir = Path(self._cache_dir)
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        has_weights = any((model_dir / name).exists() for name in ("model.safetensors", "pytorch_model.bin"))
+        has_config = (model_dir / "config.json").exists()
+        has_tokenizer = any(
+            (model_dir / name).exists()
+            for name in ("tokenizer.json", "vocab.txt", "spiece.model", "sentencepiece.bpe.model")
+        )
+
+        if not (has_weights and has_config and has_tokenizer):
+            logger.info("reranker downloading required files into %s", model_dir)
+            snapshot_download(
+                repo_id=self._model_name,
+                local_dir=str(model_dir),
+                allow_patterns=list(self._required_files),
+            )
+            self._cleanup_local_model_dir(model_dir)
+
+        return str(model_dir)
+
+    def _cleanup_local_model_dir(self, model_dir: Path) -> None:
+        cache_dir = model_dir / ".cache"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        duplicate_bin = model_dir / "pytorch_model.bin"
+        if duplicate_bin.exists() and (model_dir / "model.safetensors").exists():
+            duplicate_bin.unlink(missing_ok=True)
 
     def _build_candidate_text(self, candidate: Dict[str, Any]) -> str:
         """Строит текстовое представление кандидата для переранжирования.

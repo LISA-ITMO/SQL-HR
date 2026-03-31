@@ -1,5 +1,6 @@
 .claude/
 hf-cache/
+cross-encoder/
 results/*
 db/postgres/
 
