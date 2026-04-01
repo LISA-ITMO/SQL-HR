@@ -3,11 +3,20 @@ import requests
 import os
 import time
 import uuid
+import base64
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 SERVER_URL = os.getenv("SERVER_URL")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "1.5"))
 EXECUTOR = ThreadPoolExecutor(max_workers=1)
+SYSTEM_NAME = "Подбор персонала в ИОГВ Санкт-Петербурга"
+LOGO_PATH = Path(__file__).resolve().parent / "images" / "logo.png"
+LOGO_DATA_URI = ""
+
+if LOGO_PATH.exists():
+    encoded_logo = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    LOGO_DATA_URI = f"data:image/png;base64,{encoded_logo}"
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -23,19 +32,66 @@ if "last_polled_candidates" not in st.session_state:
 if "final_fragment_message" not in st.session_state:
     st.session_state.final_fragment_message = None
 
-st.set_page_config(page_title="SQL-HR", layout="wide")
+st.set_page_config(
+    page_title=SYSTEM_NAME,
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else None,
+    layout="wide",
+)
 
 st.markdown(
     """
     <style>
     [data-testid="stDeployButton"] { display: none; }
     [data-testid="stMainMenu"] { display: none; }
+    .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.85rem;
+        width: 100%;
+        padding: 0 0 0.9rem 0;
+        margin: 0 0 1.1rem 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+    }
+    .app-header__logo {
+        width: 68px !important;
+        min-width: 68px !important;
+        height: auto;
+        display: block;
+    }
+    .app-header__title {
+        margin: 0;
+        color: inherit !important;
+        font-size: 1.44rem !important;
+        font-weight: 700 !important;
+        line-height: 1.2 !important;
+        letter-spacing: -0.01em !important;
+    }
+    @media (max-width: 768px) {
+        .app-header {
+            gap: 0.7rem;
+            padding-bottom: 0.75rem;
+        }
+        .app-header__logo {
+            width: 52px !important;
+            min-width: 52px !important;
+        }
+        .app-header__title {
+            font-size: 1.2rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("SQL-HR")
+header_html = f"""
+<div class="app-header">
+    {"<img class='app-header__logo' src='" + LOGO_DATA_URI + "' alt='Логотип'>" if LOGO_DATA_URI else ""}
+    <div class="app-header__title">{SYSTEM_NAME}</div>
+</div>
+"""
+st.markdown(header_html, unsafe_allow_html=True)
 
 
 def _normalize_candidates(payload):
