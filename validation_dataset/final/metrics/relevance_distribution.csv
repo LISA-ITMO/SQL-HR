@@ -1,0 +1,6 @@
+search_system,0,1,2
+agent_rag,340,111,149
+bm25,492,76,32
+sql_hr,298,113,153
+sql_hr_big,283,113,201
+vector,350,122,128

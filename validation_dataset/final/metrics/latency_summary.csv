@@ -1,0 +1,6 @@
+search_system,n_queries,mean_latency_ms,median_latency_ms,p95_latency_ms,mean_latency_to_first_ms,median_latency_to_first_ms,p95_latency_to_first_ms
+agent_rag,160,24474.28,24283.35,33134.24,,,
+bm25,160,447.81,450.31,695.17,,,
+sql_hr,157,129779.89,120786.0,181501.2,,,
+sql_hr_big,159,76699.06,64447.0,159741.8,38764.3,28420.0,109759.2
+vector,160,0.27,0.25,0.35,,,
