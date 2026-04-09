@@ -171,6 +171,10 @@ def _render_candidates(candidates):
                         "email_1",
                         "email_2",
                         "email_upgo",
+                        "education_count",
+                        "appointment_date",
+                        "dismissal_date",
+                        "confirmed_experience_years",
                     ):
                         continue
                     st.markdown(f"**{field}:** {value}")
