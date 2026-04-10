@@ -69,20 +69,15 @@ class CandidateReranker:
         """
         parts: List[str] = []
 
-        # ФИО
-        name_parts = [
-            candidate.get("last_name"),
-            candidate.get("first_name"),
-            candidate.get("middle_name"),
-        ]
-        full_name = " ".join([p for p in name_parts if p])
-        if full_name:
-            parts.append(full_name)
+        # Желаемая должность
+        desired_position = candidate.get("desired_position")
+        if desired_position:
+            parts.append(f"Должность: {desired_position}")
 
-        # Место жительства
-        residence = candidate.get("residence_area")
-        if residence:
-            parts.append(f"Место жительства: {residence}")
+        # Город
+        city = candidate.get("city")
+        if city:
+            parts.append(f"Город: {city}")
 
         # Образование
         education = candidate.get("education_text")
@@ -94,20 +89,10 @@ class CandidateReranker:
         if work:
             parts.append(f"Опыт работы: {work}")
 
-        # Дополнительная информация
-        extra = candidate.get("extra_info_text")
-        if extra:
-            parts.append(f"Дополнительно: {extra}")
-
-        # Количество образований
-        edu_count = candidate.get("education_count")
-        if edu_count is not None:
-            parts.append(f"Количество образований: {edu_count}")
-
-        # Подтвержденный опыт в годах
-        exp_years = candidate.get("confirmed_experience_years")
+        # Опыт в годах
+        exp_years = candidate.get("experience_years")
         if exp_years is not None:
-            parts.append(f"Опыт работы (последняя должность): {exp_years} лет")
+            parts.append(f"Стаж: {exp_years} лет")
 
         return " | ".join(parts)
 

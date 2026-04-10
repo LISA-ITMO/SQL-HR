@@ -112,8 +112,24 @@ docker compose -f docker-compose-prod.yml up
 
 **UI**
 ```text
-http://localhost:8501
+http://localhost:18501
 ```
+
+**Запуск `auto_frontend`**
+1. Сначала поднимите API агента и Postgres:
+   ```bash
+   docker compose -f docker-compose-api.yml up --build postgres agent_server
+   ```
+2. Убедитесь, что healthcheck отвечает:
+   ```text
+   http://localhost:8010/health
+   ```
+3. Затем запускайте батч-скрипт:
+   ```bash
+   cd auto_frontend
+   python run.py
+   ```
+4. Если агент доступен не на `http://localhost:8010`, задайте `AGENT_URL`.
 
 ---
 

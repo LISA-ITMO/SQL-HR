@@ -1,120 +1,86 @@
 from __future__ import annotations
 
-import uuid
 from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
-# --- SQLAlchemy ORM base & types ---
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy import Text, Integer, Boolean, Date, Numeric, text as sql_text
+from sqlalchemy import Boolean, Date, Integer, Numeric, Text
 
 
 class Base(DeclarativeBase):
-    """Declarative base for ORM models.
-
-    Если у вас уже есть свой Base в проекте, можно удалить этот класс
-    и импортировать его оттуда. Здесь оставлен для самодостаточности файла.
-    """
+    pass
 
 
 class CandidateORM(Base):
     __tablename__ = "candidates"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        server_default=sql_text("gen_random_uuid()"),  # соответствует schema.sql
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
 
-    date_received: Mapped[Optional[date]] = mapped_column(Date)
-    last_name: Mapped[Optional[str]] = mapped_column(Text)
-    first_name: Mapped[Optional[str]] = mapped_column(Text)
-    middle_name: Mapped[Optional[str]] = mapped_column(Text)
-    previous_last_name: Mapped[Optional[str]] = mapped_column(Text)
-    sex: Mapped[Optional[str]] = mapped_column(Text)
+    # Демография
+    sex:        Mapped[Optional[str]]  = mapped_column(Text)
+    age:        Mapped[Optional[int]]  = mapped_column(Integer)
     birth_date: Mapped[Optional[date]] = mapped_column(Date)
-    birth_place: Mapped[Optional[str]] = mapped_column(Text)
-    snils: Mapped[Optional[str]] = mapped_column(Text)
-    passport_number: Mapped[Optional[str]] = mapped_column(Text)
-    passport_issued: Mapped[Optional[str]] = mapped_column(Text)
 
-    phone_mobile: Mapped[Optional[str]] = mapped_column(Text)
-    phone_2: Mapped[Optional[str]] = mapped_column(Text)
-    phone_3: Mapped[Optional[str]] = mapped_column(Text)
-    email_1: Mapped[Optional[str]] = mapped_column(Text)
-    email_2: Mapped[Optional[str]] = mapped_column(Text)
-    email_upgo: Mapped[Optional[str]] = mapped_column(Text)
+    # Профессиональный профиль
+    desired_position: Mapped[Optional[str]]   = mapped_column(Text)
+    experience_years: Mapped[Optional[float]] = mapped_column(Numeric(6, 2))
+    last_employer:    Mapped[Optional[str]]   = mapped_column(Text)
+    last_position:    Mapped[Optional[str]]   = mapped_column(Text)
+    work_text:        Mapped[Optional[str]]   = mapped_column(Text)
 
-    residence_area: Mapped[Optional[str]] = mapped_column(Text)
-
-    appointment_date: Mapped[Optional[date]] = mapped_column(Date)
-    dismissal_date: Mapped[Optional[date]] = mapped_column(Date)
-    confirmed_experience_years: Mapped[Optional[float]] = mapped_column(Numeric(6, 1))
-
-    source_info: Mapped[Optional[str]] = mapped_column(Text)
-
+    # Образование
     education_text: Mapped[Optional[str]] = mapped_column(Text)
-    education_count: Mapped[Optional[int]] = mapped_column(Integer)
-    work_text: Mapped[Optional[str]] = mapped_column(Text)
-    extra_info_text: Mapped[Optional[str]] = mapped_column(Text)
-    citizenship: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[Optional[str]] = mapped_column(Text)
-    ready_to_work: Mapped[Optional[str]] = mapped_column(Text)
 
+    # Условия работы
+    salary:          Mapped[Optional[int]]  = mapped_column(Integer)
+    employment_type: Mapped[Optional[str]]  = mapped_column(Text)
+    schedule:        Mapped[Optional[str]]  = mapped_column(Text)
+    relocation:      Mapped[Optional[bool]] = mapped_column(Boolean)
+    business_trips:  Mapped[Optional[bool]] = mapped_column(Boolean)
 
-# --- Pydantic schemas (JSON-friendly) ---
+    # Местоположение
+    city: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Дополнительно
+    has_car: Mapped[Optional[bool]] = mapped_column(Boolean)
+
 
 class CandidateOut(BaseModel):
-    """Публичное представление кандидата (готово к JSON/LLM инструментам)."""
     model_config = ConfigDict(from_attributes=True)
 
-    id: uuid.UUID
-    date_received: Optional[date] = None
-    last_name: Optional[str] = None
-    first_name: Optional[str] = None
-    middle_name: Optional[str] = None
-    previous_last_name: Optional[str] = None
-    sex: Optional[str] = None
+    id: str
+
+    # Демография
+    sex:        Optional[str]  = None
+    age:        Optional[int]  = None
     birth_date: Optional[date] = None
-    birth_place: Optional[str] = None
-    snils: Optional[str] = None
-    passport_number: Optional[str] = None
-    passport_issued: Optional[str] = None
 
-    phone_mobile: Optional[str] = None
-    phone_2: Optional[str] = None
-    phone_3: Optional[str] = None
-    email_1: Optional[str] = None
-    email_2: Optional[str] = None
-    email_upgo: Optional[str] = None
+    # Профессиональный профиль
+    desired_position: Optional[str]   = None
+    experience_years: Optional[float] = None
+    last_employer:    Optional[str]   = None
+    last_position:    Optional[str]   = None
+    work_text:        Optional[str]   = None
 
-    residence_area: Optional[str] = None
-
-    appointment_date: Optional[date] = None
-    dismissal_date: Optional[date] = None
-    confirmed_experience_years: Optional[float] = None
-
-    source_info: Optional[str] = None
-
+    # Образование
     education_text: Optional[str] = None
-    education_count: Optional[int] = None
-    work_text: Optional[str] = None
-    extra_info_text: Optional[str] = None
-    citizenship: Optional[str] = None
-    status: Optional[str] = None
-    ready_to_work: Optional[str] = None
+
+    # Условия работы
+    salary:          Optional[int]  = None
+    employment_type: Optional[str]  = None
+    schedule:        Optional[str]  = None
+    relocation:      Optional[bool] = None
+    business_trips:  Optional[bool] = None
+
+    # Местоположение
+    city: Optional[str] = None
+
+    # Дополнительно
+    has_car: Optional[bool] = None
 
 
- # Для совместимости с прежним импортом: Candidate == CandidateOut
 Candidate = CandidateOut
 
-
-__all__ = [
-    "Base",
-    "CandidateORM",
-    "CandidateOut",
-    "Candidate",
-]
+__all__ = ["Base", "CandidateORM", "CandidateOut", "Candidate"]

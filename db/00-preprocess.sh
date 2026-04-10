@@ -5,7 +5,7 @@ INPUT=${INPUT:-/data/candidates.csv}
 CLEAN=${CLEAN:-/data/candidates_clean.csv}
 BAD=${BAD:-/data/candidates_bad.csv}
 LOG=${LOG:-/data/candidates_bad_rows.txt}
-DELIM=${DELIM:-';'}
+DELIM=${DELIM:-','}
 
 if [[ ! -f "$INPUT" ]]; then
   echo "preprocess: input file not found: $INPUT" >&2
@@ -44,10 +44,7 @@ bad_count = 0
 bad_date_count = 0
 
 DATE_COLUMNS = {
-    "Дата поступления документов",
     "Дата рождения",
-    "Дата назначения",
-    "Дата увольнения",
 }
 
 HEADER_SPEC_PATH = os.environ.get("HEADER_SPEC", "/db/header_spec.txt")
@@ -107,7 +104,7 @@ def parse_date(value):
 
     return None
 
-with open(input_path, newline="", encoding="utf-8") as f_in, \
+with open(input_path, newline="", encoding="utf-8-sig") as f_in, \
      open(clean_path, "w", newline="", encoding="utf-8") as f_clean, \
      open(bad_path, "w", newline="", encoding="utf-8") as f_bad, \
      open(log_path, "w", encoding="utf-8") as f_log:

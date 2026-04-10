@@ -74,4 +74,4 @@ services:
       agent_server:
         condition: service_started
     ports:
-      - "8501:8501"
+      - "18501:8501"

@@ -10,13 +10,12 @@ import time
 import functools
 from datetime import date, datetime, timedelta
 from contextvars import ContextVar
-from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict, Union
-from uuid import UUID
+from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, create_engine, func, or_, select, text
+from sqlalchemy import Numeric, and_, case, cast, create_engine, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
@@ -49,7 +48,7 @@ from prompts import (
     SUB_AGENT_LAST_TRY_PROMPT,
     SUB_AGENT_SYSTEM_PROMPT,
 )
-from reranker import rerank_candidates
+from reranker import rerank_with_scores
 
 logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
@@ -209,8 +208,8 @@ def _should_compact_tool_messages(messages: List[AnyMessage]) -> bool:
 
 
 def _candidate_full_name(candidate: Dict[str, Any]) -> str:
-    parts = [candidate.get("last_name"), candidate.get("first_name"), candidate.get("middle_name")]
-    return " ".join([p for p in parts if p])
+    parts = [candidate.get("desired_position"), candidate.get("city")]
+    return ", ".join([p for p in parts if p])
 
 
 def _is_compact_candidate(candidate: Any) -> bool:
@@ -239,6 +238,7 @@ DB_NAME = os.getenv("POSTGRES_DB", "candidates_db")
 
 engine = create_engine(
     f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
+    connect_args={"sslmode": "disable"},
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
@@ -311,122 +311,99 @@ llm = api.llm
 # ------------------------
 
 
+_BOOL_FIELD_HINT = "Заполняй только если явно указано требование. None = не фильтровать."
+
+
 class QuerySpec(BaseModel):
-    age_from: Optional[int] = Field(
-        default=None,
-        ge=0,
-        le=120,
-        description="Возраст от (минимальный возраст, в годах).",
-    )
-    age_to: Optional[int] = Field(
-        default=None,
-        ge=0,
-        le=120,
-        description="Возраст до (максимальный возраст, в годах).",
-    )
-    education_count: Optional[int] = Field(
-        default=None,
-        ge=0,
-        description="Минимальное количество образований (>=).",
-    )
-    confirmed_experience_years_min: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Минимальный подтвержденный опыт на последней работе в годах (>=).",
-    )
-    keywords_any: List[str] = Field(
-        default_factory=list,
-        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
-    )
-    keywords_all: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова, которые обязательно должны присутствовать одновременно в текстовых полях. ",
-    )
-    keywords_not: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
-    )
-    education_keywords_any: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
-    )
-    offset: int = Field(
-        0,
-        ge=0,
-        description=(
-            "Сколько строк пропустить (pagination). "
-            "Назначай только если предыдущий такой же запрос вернул максимум (5)."
-        ),
-    )
-    citizenship: Optional[str] = Field(
-        default=None,
-        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
-    )
-    status: Optional[str] = Field(
-        default=None,
-        description="Статус в МКР. Если не указано, будет 'резервист'."
-    )
-    ready_to_work: Optional[str] = Field(
-        default=None,
-        description="Статус в МКР. Если не указано, будет 'Годен'."
-    )
+    # --- Возраст ---
+    age_from: Optional[int] = Field(default=None, ge=0, le=120,
+        description="Минимальный возраст кандидата. Если не указан — не ограничивать.")
+    age_to: Optional[int] = Field(default=None, ge=0, le=120,
+        description="Максимальный возраст кандидата. Если не указан — не ограничивать.")
+
+    # --- Опыт ---
+    experience_years_min: Optional[float] = Field(default=None, ge=0,
+        description="Минимальный стаж в годах (>=). Заполняй ТОЛЬКО если явно указан: 'от 2 лет', 'опыт от 3 лет'.")
+
+    # --- Зарплата ---
+    salary_max: Optional[int] = Field(default=None, ge=0,
+        description="Максимальная желаемая ЗП кандидата в рублях (<=). Только если указан бюджет.")
+
+    # --- Демография ---
+    sex: Optional[str] = Field(default=None,
+        description="'Мужчина' или 'Женщина'. Только если явно требуется.")
+
+    # --- Местоположение ---
+    city: Optional[str] = Field(default=None,
+        description="Город (ILIKE). Заполняй только при явном упоминании города.")
+
+    # --- Условия работы ---
+    relocation: Optional[bool] = Field(default=None,
+        description=f"True = кандидат должен быть согласен на переезд. {_BOOL_FIELD_HINT}")
+    full_time: Optional[bool] = Field(default=None,
+        description=f"True = кандидат должен иметь полную занятость. {_BOOL_FIELD_HINT}")
+
+    # --- Текстовый поиск ---
+    position_keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово должно встречаться в desired_position. Только для названий должностей и их вариаций.")
+    keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово должно встречаться в desired_position, work_text, education_text, city.")
+    keywords_all: List[str] = Field(default_factory=list,
+        description="Все слова должны присутствовать одновременно. Только жёсткие требования.")
+    keywords_not: List[str] = Field(default_factory=list,
+        description="Ни одно из этих слов не должно встречаться в текстовых полях.")
+    education_keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово в education_text. Вузы, специальности, степени.")
+
+    # --- Пагинация ---
+    offset: int = Field(0, ge=0,
+        description="Сколько строк пропустить. Ставь N*20 если предыдущий запрос вернул 20 результатов.")
 
 
 class QuerySpecLite(BaseModel):
-    age_from: Optional[int] = Field(
-        default=None,
-        ge=0,
-        le=120,
-        description="Возраст от (минимальный возраст, в годах).",
-    )
-    age_to: Optional[int] = Field(
-        default=None,
-        ge=0,
-        le=120,
-        description="Возраст до (максимальный возраст, в годах).",
-    )
-    education_count: Optional[int] = Field(
-        default=None,
-        ge=0,
-        description="Минимальное количество образований (>=).",
-    )
-    confirmed_experience_years_min: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Минимальный подтвержденный опыт на последней работе в годах (>=).",
-    )
-    keywords_any: List[str] = Field(
-        default_factory=list,
-        description="Список ключевых слов, из которых должно встретиться хотя бы одно в текстовых полях.",
-    )
-    keywords_not: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова, которые не должны встречаться в текстовых полях.",
-    )
-    education_keywords_any: List[str] = Field(
-        default_factory=list,
-        description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
-    )
-    offset: int = Field(
-        0,
-        ge=0,
-        description=(
-            "Сколько строк пропустить (pagination). "
-            "Назначай только если предыдущий такой же запрос вернул максимум (5)."
-        ),
-    )
-    citizenship: Optional[str] = Field(
-        default=None,
-        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
-    )
-    status: Optional[str] = Field(
-        default=None,
-        description="Статус в МКР. Если не указано, будет 'резервист'."
-    )
-    ready_to_work: Optional[str] = Field(
-        default=None,
-        description="Статус в МКР. Если не указано, будет 'Годен'."
-    )
+    """Упрощённый вариант для fallback-запроса (меньше ограничений)."""
+
+    # --- Возраст ---
+    age_from: Optional[int] = Field(default=None, ge=0, le=120,
+        description="Минимальный возраст кандидата.")
+    age_to: Optional[int] = Field(default=None, ge=0, le=120,
+        description="Максимальный возраст кандидата.")
+
+    # --- Опыт ---
+    experience_years_min: Optional[float] = Field(default=None, ge=0,
+        description="Минимальный стаж в годах (>=).")
+
+    # --- Зарплата ---
+    salary_max: Optional[int] = Field(default=None, ge=0,
+        description="Максимальная желаемая ЗП кандидата в рублях (<=).")
+
+    # --- Демография ---
+    sex: Optional[str] = Field(default=None,
+        description="'Мужчина' или 'Женщина'.")
+
+    # --- Местоположение ---
+    city: Optional[str] = Field(default=None,
+        description="Город (ILIKE).")
+
+    # --- Условия работы ---
+    relocation: Optional[bool] = Field(default=None,
+        description=f"True = согласен на переезд. {_BOOL_FIELD_HINT}")
+    full_time: Optional[bool] = Field(default=None,
+        description=f"True = полная занятость. {_BOOL_FIELD_HINT}")
+
+    # --- Текстовый поиск ---
+    position_keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово в desired_position.")
+    keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово в текстовых полях.")
+    keywords_not: List[str] = Field(default_factory=list,
+        description="Ни одно из этих слов не должно встречаться.")
+    education_keywords_any: List[str] = Field(default_factory=list,
+        description="Хотя бы одно слово в education_text.")
+
+    # --- Пагинация ---
+    offset: int = Field(0, ge=0,
+        description="Сколько строк пропустить.")
 
 
 class QuerySpecBundle(BaseModel):
@@ -442,15 +419,14 @@ def _short(txt: Optional[str], limit: int = 1000) -> Optional[str]:
 
 
 def _compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ("education_text", "work_text", "extra_info_text"):
+    for key in ("education_text", "work_text"):
         if key in candidate:
             candidate[key] = _short(candidate.get(key))
-    for key in ("date_received", "birth_date", "appointment_date", "dismissal_date"):
-        value = candidate.get(key)
-        if hasattr(value, "isoformat"):
-            candidate[key] = value.isoformat()
-    if "confirmed_experience_years" in candidate and candidate["confirmed_experience_years"] is not None:
-        candidate["confirmed_experience_years"] = float(candidate["confirmed_experience_years"])
+    if "experience_years" in candidate and candidate["experience_years"] is not None:
+        candidate["experience_years"] = float(candidate["experience_years"])
+    value = candidate.get("birth_date")
+    if hasattr(value, "isoformat"):
+        candidate["birth_date"] = value.isoformat()
     return candidate
 
 
@@ -620,71 +596,70 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         if age_from is not None and age_to is not None and age_from > age_to:
             logger.info("age_from > age_to; swapping bounds: %s > %s", age_from, age_to)
             age_from, age_to = age_to, age_from
-    elif age_from is None or age_to is None:
+    else:
         age_from, age_to = 20, 65
-    bd_from, bd_to = _age_to_birth_date_bounds(age_from, age_to)
-    if bd_from:
-        clauses.append(C.birth_date >= bd_from)
-    if bd_to:
-        clauses.append(C.birth_date <= bd_to)
+    if age_from is not None:
+        clauses.append(or_(C.age.is_(None), C.age >= age_from))
+    if age_to is not None:
+        clauses.append(or_(C.age.is_(None), C.age <= age_to))
 
-    if spec.education_count is not None:
-        clauses.append(C.education_count >= spec.education_count)
-    else:
-        clauses.append(C.education_count >= 1)
+    experience_years_min = getattr(spec, "experience_years_min", None)
+    if experience_years_min is not None:
+        clauses.append(C.experience_years >= experience_years_min)
 
-    if spec.confirmed_experience_years_min is not None:
-        clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
 
-    citizenship_filter = _normalize_filter_value(spec.citizenship)
-    if citizenship_filter is not None:
-        if citizenship_filter == 'рф':
-            clauses.append(func.lower(C.citizenship) == 'рф')
-        elif citizenship_filter == 'другое':
-            clauses.append(
-                and_(
-                    C.citizenship.is_not(None),
-                    func.lower(C.citizenship) != 'рф',
-                )
+    # salary теперь INTEGER — прямое сравнение
+    salary_max = getattr(spec, "salary_max", None)
+    if salary_max is not None:
+        clauses.append(or_(C.salary.is_(None), C.salary <= salary_max))
+
+    sex_filter = _normalize_filter_value(getattr(spec, "sex", None))
+    if sex_filter is not None:
+        clauses.append(func.lower(C.sex) == sex_filter)
+
+    city_filter = getattr(spec, "city", None)
+    if city_filter and city_filter.strip():
+        city_pattern = f"%{city_filter.strip()}%"
+        # При фильтрации по городу также оставляем кандидатов, готовых к переезду.
+        clauses.append(
+            or_(
+                func.coalesce(C.city, "").ilike(city_pattern),
+                C.relocation.is_(True),
             )
-        else:
-            clauses.append(func.coalesce(C.citizenship, "").ilike(f"%{citizenship_filter}%"))
-    else:
-        clauses.append(func.lower(C.citizenship) == 'рф')
+        )
 
-    status_filter = _normalize_filter_value(spec.status)
-    if status_filter is not None:
-        clauses.append(func.lower(C.status) == status_filter)
-    else:
-        clauses.append(func.lower(C.status) == 'резервист')
-
-    ready_to_work_filter = _normalize_filter_value(spec.ready_to_work)
-    if ready_to_work_filter is not None:
-        clauses.append(func.lower(C.ready_to_work) == ready_to_work_filter)
-    else:
-        clauses.append(func.lower(C.ready_to_work) == 'годен')
-
+    # --- Булевы фильтры по условиям работы ---
+    if getattr(spec, "relocation", None) is True:
+        clauses.append(C.relocation.is_(True))
+    if getattr(spec, "full_time", None) is True:
+        clauses.append(func.coalesce(C.employment_type, "").ilike("%полная занятость%"))
 
     def _text_match(keyword: str):
         pattern = f"%{keyword}%"
         # NULL-safe matching so NOT conditions don't null out the whole filter.
         return or_(
-            func.coalesce(C.last_name, "").ilike(pattern),
-            func.coalesce(C.first_name, "").ilike(pattern),
-            func.coalesce(C.middle_name, "").ilike(pattern),
-            func.coalesce(C.residence_area, "").ilike(pattern),
-            func.coalesce(C.education_text, "").ilike(pattern),
+            func.coalesce(C.desired_position, "").ilike(pattern),
             func.coalesce(C.work_text, "").ilike(pattern),
-            func.coalesce(C.extra_info_text, "").ilike(pattern),
-            func.coalesce(C.citizenship, "").ilike(pattern),
+            func.coalesce(C.education_text, "").ilike(pattern),
+            func.coalesce(C.city, "").ilike(pattern),
         )
 
     def _education_text_match(keyword: str):
         pattern = f"%{keyword}%"
         return func.coalesce(C.education_text, "").ilike(pattern)
 
+    def _position_match(keyword: str):
+        pattern = f"%{keyword}%"
+        return func.coalesce(C.desired_position, "").ilike(pattern)
+
     for kw in keywords_all:
         clauses.append(_text_match(kw))
+
+    position_keywords_any = getattr(spec, "position_keywords_any", None) or []
+    position_priority_clause = None
+    position_any_clauses = [_position_match(kw) for kw in position_keywords_any]
+    if position_any_clauses:
+        position_priority_clause = case((or_(*position_any_clauses), 0), else_=1)
 
     any_clauses = [_text_match(kw) for kw in keywords_any]
     if any_clauses:
@@ -701,6 +676,8 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     stmt = select(C)
     if clauses:
         stmt = stmt.where(and_(*clauses))
+    if position_priority_clause is not None:
+        stmt = stmt.order_by(position_priority_clause)
     if int(spec.offset or 0) > 0:
         stmt = stmt.offset(int(spec.offset))
     stmt = stmt.limit(20)
@@ -719,18 +696,11 @@ def fetch_candidates_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
         if s not in seen:
             uniq.append(s)
             seen.add(s)
-    uuid_ids: List[uuid.UUID] = []
-    for s in uniq:
-        try:
-            uuid_ids.append(uuid.UUID(s))
-        except Exception:
-            continue
-
-    if not uuid_ids:
+    if not uniq:
         return []
 
     with SessionLocal() as session:
-        stmt = select(C).where(C.id.in_(uuid_ids))
+        stmt = select(C).where(C.id.in_(uniq))
         rows = session.scalars(stmt).all()
         output: List[Dict[str, Any]] = []
         for row in rows:
@@ -832,32 +802,23 @@ def _db_search_impl(
         for c in rows:
             record = {
                 "id": str(c.id),
-                "last_name": c.last_name,
-                "first_name": c.first_name,
-                "middle_name": c.middle_name,
-                "residence_area": c.residence_area,
+                "sex": c.sex,
+                "age": c.age,
                 "birth_date": c.birth_date.isoformat() if c.birth_date else None,
-                "education_count": c.education_count,
-                "education_text": _short(c.education_text),
+                "desired_position": c.desired_position,
+                "experience_years": float(c.experience_years) if c.experience_years is not None else None,
+                "last_employer": c.last_employer,
+                "last_position": c.last_position,
                 "work_text": _short(c.work_text),
-                "extra_info_text": _short(c.extra_info_text),
-                "appointment_date": c.appointment_date.isoformat() if c.appointment_date else None,
-                "dismissal_date": c.dismissal_date.isoformat() if c.dismissal_date else None,
-                "confirmed_experience_years": float(c.confirmed_experience_years)
-                if c.confirmed_experience_years is not None
-                else None,
-                "phone_mobile": c.phone_mobile,
-                "phone_2": c.phone_2,
-                "phone_3": c.phone_3,
-                "email_1": c.email_1,
-                "email_2": c.email_2,
-                "email_upgo": c.email_upgo,
-                "status": c.status,
-                "ready_to_work": c.ready_to_work,
-                "citizenship": c.citizenship,
+                "education_text": _short(c.education_text),
+                "salary": c.salary,
+                "employment_type": c.employment_type,
+                "relocation": c.relocation,
+                "city": c.city,
+                "has_car": c.has_car,
             }
-            name_parts = [c.last_name, c.first_name, c.middle_name]
-            full_name = " ".join([p for p in name_parts if p])
+            desc_parts = [c.desired_position, c.city]
+            full_name = ", ".join([p for p in desc_parts if p])
             compact_payload.append(
                 {
                     "id": record["id"],
@@ -902,11 +863,17 @@ def _db_search_impl(
     top_k = int(os.getenv("RERANKER_TOP_K", "5"))
     if query and best_candidates:
         rerank_start = time.perf_counter()
-        best_candidates = rerank_candidates(query, best_candidates, top_k=top_k)
+        ranked_with_scores = rerank_with_scores(query, best_candidates, top_k=top_k)
         rerank_elapsed = time.perf_counter() - rerank_start
         _append_speed_report(session_id, "rerank", rerank_elapsed)
-        logger.info("reranking done in %.3f sec, returned %s candidates", rerank_elapsed, len(best_candidates))
+        logger.info("reranking done in %.3f sec, returned %s candidates", rerank_elapsed, len(ranked_with_scores))
+        best_candidates = []
+        for candidate, score in ranked_with_scores:
+            candidate["rerank_score"] = float(score)
+            best_candidates.append(candidate)
     else:
+        for candidate in best_candidates[:top_k]:
+            candidate["rerank_score"] = None
         best_candidates = best_candidates[:top_k]
 
     if session_id and session_id in SESSIONS:
@@ -1295,33 +1262,19 @@ def find_candidates(
     return payload
 
 @tool
-def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
+def get_candidate_by_id(candidates_ids: List[str]) -> Dict:
     """Детали кандидатов по списку ID."""
 
     if not candidates_ids:
         logger.info("get_candidate_by_id tool: candidates_ids were not given")
         return {"result": "candidates ids were not given"}
 
-    # Преобразуем все ID в строки для запроса
-    str_ids = []
-    for cid in candidates_ids:
-        if isinstance(cid, UUID):
-            str_ids.append(str(cid))
-        elif isinstance(cid, str):
-            try:
-                # Проверяем что строка - валидный UUID
-                UUID(cid)
-                str_ids.append(cid)
-            except ValueError:
-                logger.warning(f"Invalid UUID string: {cid}")
-                continue
-        else:
-            logger.warning(f"Unsupported ID type: {type(cid)}")
-            continue
+    # Дедупликация ID
+    str_ids = list(dict.fromkeys(str(cid) for cid in candidates_ids if cid))
 
     if not str_ids:
         logger.info("get_candidate_by_id tool: no valid IDs provided")
-        return {"result": "no valid UUIDs provided"}
+        return {"result": "no valid IDs provided"}
 
     # Создаем параметры для запроса
     placeholders = ", ".join([f":id_{i}" for i in range(len(str_ids))])
@@ -1330,38 +1283,22 @@ def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
     query = text(
         f"""
         SELECT
-            id::text,
-            date_received,
-            last_name,
-            first_name,
-            middle_name,
-            previous_last_name,
+            id,
             sex,
-            birth_date,
-            birth_place,
-            snils,
-            passport_number,
-            passport_issued,
-            phone_mobile,
-            phone_2,
-            phone_3,
-            email_1,
-            email_2,
-            email_upgo,
-            residence_area,
-            appointment_date,
-            dismissal_date,
-            confirmed_experience_years,
-            source_info,
-            education_text,
-            education_count,
+            age,
+            desired_position,
+            experience_years,
+            last_employer,
+            last_position,
             work_text,
-            extra_info_text,
-            status,
-            ready_to_work,
-            citizenship
+            education_text,
+            salary,
+            employment_type,
+            relocation,
+            city,
+            has_car
         FROM candidates
-        WHERE id::text IN ({placeholders})
+        WHERE id IN ({placeholders})
     """
     )
 
@@ -1406,7 +1343,8 @@ def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
 
     return result
 
-main_tools = [find_candidates, get_candidate_by_id]
+#main_tools = [find_candidates, get_candidate_by_id]
+main_tools = [find_candidates]
 main_tool_node = ToolNode(main_tools)
 
 
@@ -1480,12 +1418,11 @@ def log_first_candidates_on_startup() -> None:
         logger.info("startup db_check candidates_count=%s", len(rows))
         for idx, row in enumerate(rows, start=1):
             logger.info(
-                "startup candidate[%s] id=%s last_name=%r first_name=%r residence_area=%r",
+                "startup candidate[%s] id=%s desired_position=%r city=%r",
                 idx,
                 getattr(row, "id", None),
-                getattr(row, "last_name", None),
-                getattr(row, "first_name", None),
-                getattr(row, "residence_area", None),
+                getattr(row, "desired_position", None),
+                getattr(row, "city", None),
             )
     except Exception:
         logger.exception("startup db_check failed")

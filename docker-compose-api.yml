@@ -6,6 +6,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "${AGENT_HOST_PORT:-8010}:8010"
     env_file:
       - .env
     environment:
@@ -47,7 +49,7 @@ services:
       STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
       STREAMLIT_CONFIG_DIR: /app/.streamlit
     ports:
-      - "8501:8501"
+      - "18501:8501"
 
   postgres:
     build:
