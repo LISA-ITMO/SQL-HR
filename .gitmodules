@@ -1,0 +1,3 @@
+[submodule "external/ai-competency-model"]
+	path = external/ai-competency-model
+	url = https://github.com/aimclub/ai-competency-model.git
