@@ -2,5 +2,5 @@ search_system,total_rows,judged_rows,judged_coverage
 agent_rag,600,600,1.0
 bm25,600,600,1.0
 sql_hr,564,564,1.0
-sql_hr_big,597,597,1.0
+sql_hr_big,518,518,1.0
 vector,600,600,1.0
