@@ -213,6 +213,93 @@ def _candidate_full_name(candidate: Dict[str, Any]) -> str:
     return " ".join([p for p in parts if p])
 
 
+def _normalize_match_text(value: str) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+def _looks_like_show_candidate_request(message: str) -> bool:
+    normalized = _normalize_match_text(message)
+    if not normalized:
+        return False
+    return bool(
+        re.search(
+            r"\b(покажи|показать|выведи|вывести|открой|открыть|скачай|скачать)\b",
+            normalized,
+        )
+    )
+
+
+def _candidate_match_terms(candidate: Dict[str, Any]) -> set[str]:
+    terms: set[str] = set()
+    full_name = _candidate_full_name(candidate)
+    for raw in [full_name, candidate.get("first_name"), candidate.get("last_name"), candidate.get("middle_name")]:
+        normalized = _normalize_match_text(str(raw or ""))
+        if not normalized:
+            continue
+        terms.add(normalized)
+        for part in normalized.split():
+            if len(part) >= 4:
+                terms.add(part)
+            if len(part) >= 5:
+                terms.add(part[:5])
+    return terms
+
+
+def _select_candidates_from_last_set(message: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not candidates or not _looks_like_show_candidate_request(message):
+        return []
+
+    normalized = _normalize_match_text(message)
+    selected: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    ordinal_map = {
+        "перв": 1,
+        "втор": 2,
+        "трет": 3,
+        "четверт": 4,
+        "пят": 5,
+        "шест": 6,
+        "седьм": 7,
+        "восьм": 8,
+        "девят": 9,
+        "десят": 10,
+    }
+    number_matches = [int(match) for match in re.findall(r"\b(\d{1,2})\b", normalized)]
+    for stem, value in ordinal_map.items():
+        if re.search(rf"\b{stem}\w*", normalized):
+            number_matches.append(value)
+    for number in number_matches:
+        index = number - 1
+        if 0 <= index < len(candidates):
+            candidate = candidates[index]
+            cid = str(candidate.get("id") or "")
+            if cid and cid not in seen_ids:
+                selected.append(candidate)
+                seen_ids.add(cid)
+
+    message_tokens = {
+        token
+        for token in re.split(r"[^а-яa-z0-9]+", normalized)
+        if len(token) >= 4
+    }
+    token_prefixes = {token[:5] for token in message_tokens if len(token) >= 5}
+
+    for candidate in candidates:
+        cid = str(candidate.get("id") or "")
+        if cid and cid in seen_ids:
+            continue
+        terms = _candidate_match_terms(candidate)
+        if not terms:
+            continue
+        if terms & message_tokens or terms & token_prefixes:
+            selected.append(candidate)
+            if cid:
+                seen_ids.add(cid)
+
+    return selected
+
+
 def _is_compact_candidate(candidate: Any) -> bool:
     if not isinstance(candidate, dict):
         return False
@@ -1384,7 +1471,85 @@ def get_candidate_by_id(candidates_ids: List[Union[UUID, str]]) -> Dict:
 
     return result
 
-main_tools = [find_candidates, get_candidate_by_id]
+@tool
+def show_candidate_by_id(
+    candidates_ids: List[Union[UUID, str]],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Any:
+    """Показать карточки кандидатов по списку ID, чтобы интерфейс вывел их вместе с ответом. Используй, если пользователь просит показать или скачать кандидата, а также если просит вывести определенных кандидатов."""
+
+    if not candidates_ids:
+        payload = {
+            "candidates": [],
+            "requested_ids": [],
+            "missing_ids": [],
+            "message": "Не переданы идентификаторы кандидатов.",
+        }
+        if Command is not None:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(payload, ensure_ascii=False, default=str),
+                            tool_call_id=tool_call_id,
+                            name="show_candidate_by_id",
+                        )
+                    ]
+                }
+            )
+        return payload
+
+    requested_ids: List[str] = []
+    for cid in candidates_ids:
+        if isinstance(cid, UUID):
+            requested_ids.append(str(cid))
+        elif isinstance(cid, str):
+            try:
+                requested_ids.append(str(UUID(cid)))
+            except ValueError:
+                logger.warning("show_candidate_by_id tool: invalid UUID string: %s", cid)
+        else:
+            logger.warning("show_candidate_by_id tool: unsupported ID type: %s", type(cid))
+
+    seen_ids: set[str] = set()
+    normalized_ids: List[str] = []
+    for cid in requested_ids:
+        if cid not in seen_ids:
+            normalized_ids.append(cid)
+            seen_ids.add(cid)
+
+    candidates = fetch_candidates_by_ids(normalized_ids)
+    found_ids = {
+        str(item.get("id"))
+        for item in candidates
+        if isinstance(item, dict) and item.get("id")
+    }
+    missing_ids = [cid for cid in normalized_ids if cid not in found_ids]
+    payload = {
+        "candidates": candidates,
+        "requested_ids": normalized_ids,
+        "missing_ids": missing_ids,
+        "message": (
+            f"Найдено карточек: {len(candidates)}."
+            if candidates
+            else "Карточки по указанным идентификаторам не найдены."
+        ),
+    }
+    if Command is not None:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(payload, ensure_ascii=False, default=str),
+                        tool_call_id=tool_call_id,
+                        name="show_candidate_by_id",
+                    )
+                ]
+            }
+        )
+    return payload
+
+main_tools = [find_candidates, get_candidate_by_id, show_candidate_by_id]
 main_tool_node = ToolNode(main_tools)
 
 
@@ -1539,13 +1704,13 @@ class StopSearchResponse(BaseModel):
     message: str = ""
 
 
-def _extract_find_candidates_payload(messages: List[AnyMessage]) -> Dict[str, Any]:
+def _extract_tool_payload(messages: List[AnyMessage], tool_names: set[str]) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
         name = _tool_name(msg)
-        if name != "find_candidates":
+        if name not in tool_names:
             continue
         parsed = _parse_tool_payload(msg.content)
         if isinstance(parsed, dict):
@@ -1588,6 +1753,36 @@ async def chat(req: ChatRequest) -> ChatResponse:
     history.append(HumanMessage(content=req.message))
     history_len = len(history)
 
+    latest_candidates = session_data.get("candidate_sets", [])
+    last_candidate_set = latest_candidates[-1] if latest_candidates else []
+    direct_selected = _select_candidates_from_last_set(req.message, last_candidate_set)
+    if direct_selected:
+        selected_ids = [
+            str(item.get("id"))
+            for item in direct_selected
+            if isinstance(item, dict) and item.get("id")
+        ]
+        # Always refresh full card data so download/profile UI works even for compact entries.
+        full_selected = fetch_candidates_by_ids(selected_ids) if selected_ids else []
+        if full_selected:
+            direct_selected = full_selected
+        session_data["candidate_sets"].append(direct_selected)
+        session_data["candidate_index"] = len(session_data["candidate_sets"]) - 1
+        answer = (
+            "Показываю карточку кандидата."
+            if len(direct_selected) == 1
+            else "Показываю карточки выбранных кандидатов."
+        )
+        history.append(AIMessage(content=answer))
+        return ChatResponse(
+            session_id=session_id,
+            answer=answer,
+            candidates=direct_selected,
+            candidates_index=session_data["candidate_index"],
+            candidates_total=len(session_data["candidate_sets"]),
+            report="",
+        )
+
     token = CURRENT_SESSION_ID.set(session_id)
     try:
         _init_speed_report(session_id)
@@ -1602,9 +1797,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
     ai_msgs = [m for m in new_messages if isinstance(m, AIMessage)]
     answer = ai_msgs[-1].content if ai_msgs else ""
 
-    tool_payload = _extract_find_candidates_payload(new_messages)
-    report = tool_payload.get("report", "") if isinstance(tool_payload, dict) else ""
-    cancelled = bool(tool_payload.get("cancelled")) if isinstance(tool_payload, dict) else False
+    find_payload = _extract_tool_payload(new_messages, {"find_candidates"})
+    candidate_payload = _extract_tool_payload(
+        new_messages, {"find_candidates", "show_candidate_by_id"}
+    )
+    report = find_payload.get("report", "") if isinstance(find_payload, dict) else ""
+    cancelled = bool(find_payload.get("cancelled")) if isinstance(find_payload, dict) else False
 
     if cancelled:
         tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")
@@ -1625,12 +1823,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     # Save candidate set history in the session.
     candidates_list: List[Dict[str, Any]] = []
-    payload_candidates = tool_payload.get("candidates") if isinstance(tool_payload, dict) else None
+    payload_candidates = (
+        candidate_payload.get("candidates") if isinstance(candidate_payload, dict) else None
+    )
     pending_candidates = session_data.get("pending_candidates") or []
     pending_candidate_ids = session_data.get("pending_candidate_ids") or []
     tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")
-    find_candidates_used = bool(tool_call_msg or tool_result_msg)
-    if find_candidates_used:
+    show_call_msg, show_result_msg = _find_tool_pair(new_messages, "show_candidate_by_id")
+    candidates_tool_used = bool(
+        tool_call_msg or tool_result_msg or show_call_msg or show_result_msg
+    )
+    if candidates_tool_used:
         if isinstance(payload_candidates, list) and payload_candidates:
             if _are_compact_candidates(payload_candidates) and pending_candidates:
                 candidates_list = pending_candidates
