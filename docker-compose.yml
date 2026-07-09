@@ -1,7 +1,8 @@
 services:
 
   agent_server:
-    image: jgsnapp/sql-hr-agent-server:latest
+    build:
+      context: ./agent_server
     container_name: agent_server
     restart: unless-stopped
     env_file:

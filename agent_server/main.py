@@ -221,12 +221,13 @@ def _looks_like_show_candidate_request(message: str) -> bool:
     normalized = _normalize_match_text(message)
     if not normalized:
         return False
-    return bool(
-        re.search(
-            r"\b(покажи|показать|выведи|вывести|открой|открыть|скачай|скачать)\b",
-            normalized,
-        )
-    )
+    if re.search(
+        r"\b(покажи|показать|выведи|вывести|открой|открыть|скачай|скачать|"
+        r"дай|дайте|пришли|пришлите|отправь|отправьте)\b",
+        normalized,
+    ):
+        return True
+    return bool(re.search(r"\b(анкет\w*|карточк\w*|профил\w*)\b", normalized))
 
 
 def _candidate_match_terms(candidate: Dict[str, Any]) -> set[str]:
