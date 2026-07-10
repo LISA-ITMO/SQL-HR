@@ -1,4 +1,13 @@
-.env
+.claude/
 hf-cache/
-results/
-data/
+cross-encoder/
+results/*
+db/postgres/
+
+data/*
+
+!data/candidates_synth.csv
+!data/candidates_real.csv
+
+__pycache__/
+*.pyc
