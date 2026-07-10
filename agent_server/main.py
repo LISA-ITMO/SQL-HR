@@ -371,7 +371,7 @@ class API:
 
 
 api = API()
-llm = api.llm
+gpu_llm = api.gpu_llm
 
 
 # ------------------------
