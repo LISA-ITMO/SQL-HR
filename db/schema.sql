@@ -36,5 +36,9 @@ CREATE TABLE candidates (
     extra_info_text TEXT,
     status TEXT,
     ready_to_work TEXT,
-    citizenship TEXT
+    citizenship TEXT,
+
+    -- откуда запись: имя CSV и номер записи в нём (заголовок = 1); заполняет loader/load_csv.py
+    source_file TEXT,
+    source_row INTEGER
 );
