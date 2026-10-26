@@ -920,6 +920,8 @@ def _db_search_impl(
                 "status": c.status,
                 "ready_to_work": c.ready_to_work,
                 "citizenship": c.citizenship,
+                "source_file": c.source_file,
+                "source_row": c.source_row,
             }
             name_parts = [c.last_name, c.first_name, c.middle_name]
             full_name = " ".join([p for p in name_parts if p])
