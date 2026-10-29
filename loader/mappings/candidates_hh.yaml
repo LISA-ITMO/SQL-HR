@@ -1,0 +1,32 @@
+fields:
+  # ФИО в файле нет. Чтобы кандидат был виден в чате и карточке, вместо фамилии
+  # записывается candidate_id. Это реальное значение из файла, а не выдуманное.
+  last_name: "candidate_id"
+
+  sex: "sex"
+  residence_area: "city"
+
+  confirmed_experience_years:
+    column: "work_experience_years"
+    type: number
+
+  education_text:
+    columns: ["education_level_and_university"]
+
+  work_text:
+    columns:
+      - "desired_position"
+      - "last_job_title"
+      - "last_company"
+      - "employment_type"
+      - "work_schedule"
+      - "work_experience"
+
+  extra_info_text:
+    columns:
+      - "age"
+      - "expected_salary_rub"
+      - "ready_to_relocate"
+      - "ready_for_business_trips"
+      - "has_car"
+      - "resume_updated_at"
