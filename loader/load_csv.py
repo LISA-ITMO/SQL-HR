@@ -34,6 +34,9 @@ DATE_FIELDS = {"date_received", "birth_date", "appointment_date", "dismissal_dat
 # experience_years (стаж по двум датам), citizenship (РФ / текст паспорта).
 VALID_TYPES = {"text", "date", "number", "int", "count_true", "experience_years", "citizenship"}
 TRUE_VALUES = {"true", "t", "1", "yes", "да", "истина", "верно"}
+FALSE_VALUES = {"false", "f", "0", "no", "нет", "ложь", "неверно"}
+# Явное «сведений нет». Пустая ячейка и отсутствующая колонка считаются так же.
+UNKNOWN_VALUES = {"неизвестно", "нет данных", "н/д", "unknown"}
 
 # Поля, по которым SQL-HR фильтрует кандидатов, если в запросе не указано иное
 # (agent_server/main.py, get_from_query). Если поле пустое у всех записей файла,
@@ -142,8 +145,34 @@ def citizenship(value):
     return "РФ" if ("россия" in low or "россии" in low or "рф" in low) else value
 
 
-def build_value(field, spec, cells):
-    """cells: {название колонки: значение или None}. Возвращает значение для поля."""
+def count_true(cols, cells, notes):
+    """Сколько колонок отмечено «да» (например, число дипломов).
+
+    Каждая ячейка — «да», «нет» или «неизвестно» (пусто, нет колонки, UNKNOWN_VALUES).
+    Нераспознанное значение тоже считается неизвестным и попадает в notes как (колонка, значение).
+    - неизвестных нет: число «да» (все «нет» = 0);
+    - есть «да» и неизвестные: число «да» как нижняя граница («да + неизвестно» = 1);
+    - «да» нет, но есть неизвестные: None, ведь неизвестная часть могла быть «да».
+    """
+    yes = unknown = 0
+    for c in cols:
+        value = " ".join((cells.get(c) or "").split()).lower()
+        if value in TRUE_VALUES:
+            yes += 1
+        elif value in FALSE_VALUES:
+            continue
+        else:
+            unknown += 1
+            if value and value not in UNKNOWN_VALUES:
+                notes.append((c, cells[c]))
+    if unknown and not yes:
+        return None
+    return yes
+
+
+def build_value(field, spec, cells, notes):
+    """cells: {название колонки: значение или None}. Возвращает значение для поля.
+    notes: список, куда складываются нераспознанные значения (колонка, значение)."""
     t, cols = spec["type"], spec["columns"]
     if t == "text":
         if len(cols) == 1:
@@ -163,10 +192,7 @@ def build_value(field, spec, cells):
         except ValueError:
             raise BadValue("invalid_number", cols[0], v)
     if t == "count_true":
-        present = [c for c in cols if c in cells]
-        if not present:
-            return None
-        return sum(1 for c in present if (cells[c] or "").lower() in TRUE_VALUES)
+        return count_true(cols, cells, notes)
     if t == "experience_years":
         start, end = to_date(cells.get(cols[0]), cols[0]), to_date(cells.get(cols[1]), cols[1])
         if start is None or end is None:
@@ -180,11 +206,12 @@ def build_value(field, spec, cells):
 # ----------------------------- чтение CSV -----------------------------
 
 def read_csv(path, delimiter, fields):
-    """Возвращает (заголовок, записи, отклонённые). Номер записи: заголовок = 1."""
+    """Возвращает (заголовок, записи, отклонённые, нераспознанные значения).
+    Номер записи: заголовок = 1. Нераспознанные: (номер записи, колонка, значение), только у принятых записей."""
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f, delimiter=delimiter)
         header = None
-        loaded, rejected = [], []
+        loaded, rejected, notes = [], [], []
         for row_num, row in enumerate(reader, start=1):
             if header is None:
                 header = [h.strip() for h in row]
@@ -194,20 +221,21 @@ def read_csv(path, delimiter, fields):
                 rejected.append((row_num, reason, "", f"{len(row)} из {len(header)}"))
                 continue
             cells = {h: (v.strip() or None) for h, v in zip(header, row)}
-            record = {}
+            record, row_notes = {}, []
             try:
                 for field, spec in fields.items():
-                    record[field] = build_value(field, spec, cells)
+                    record[field] = build_value(field, spec, cells, row_notes)
             except BadValue as e:
                 rejected.append((row_num, e.reason, e.column, e.value))
                 continue
             loaded.append((row_num, record))
-    return header, loaded, rejected
+            notes.extend((row_num, column, value) for column, value in row_notes)
+    return header, loaded, rejected, notes
 
 
 # ----------------------------- отчёт -----------------------------
 
-def print_report(csv_path, header, loaded, rejected, fields, mapping_path):
+def print_report(csv_path, header, loaded, rejected, notes, fields, mapping_path):
     total = len(loaded) + len(rejected)
     print(f"Файл: {csv_path.name} (записей: {total}, колонок: {len(header)})")
     print(f"Соответствие: {mapping_path}")
@@ -224,6 +252,13 @@ def print_report(csv_path, header, loaded, rejected, fields, mapping_path):
         for col in spec["columns"]:
             if col not in header_set:
                 warnings.append(f"колонка «{col}» из соответствия не найдена в CSV (поле {field})")
+    unrecognized = {}
+    for row_num, column, value in notes:
+        unrecognized.setdefault((column, value), []).append(row_num)
+    for (column, value), rows in unrecognized.items():
+        shown = ", ".join(map(str, rows[:5])) + (", …" if len(rows) > 5 else "")
+        warnings.append(f"колонка «{column}»: значение «{value}» не распознано как да/нет, "
+                        f"считается неизвестным (записей: {len(rows)}; {shown})")
     mapped_cols = {c for s in fields.values() for c in s["columns"]}
     unused = [h for h in header if h not in mapped_cols]
 
@@ -275,31 +310,37 @@ def connect(args):
     return psycopg2.connect(**params)
 
 
-def write_to_db(args, source_file, loaded):
+class LoaderError(Exception):
+    """Загрузку нужно остановить; база при этом не изменена."""
+
+
+def write_to_db(conn, source_file, loaded, replace):
+    """Пишет записи в candidates. Возвращает, сколько старых записей файла удалено.
+
+    Удаление старых записей (--replace) и вставка идут в одной транзакции:
+    при любой ошибке она откатывается и прежние записи файла остаются в базе.
+    """
     from psycopg2.extras import execute_values
-    conn = connect(args)
-    try:
-        with conn, conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('public.candidates')")
-            if cur.fetchone()[0] is None:
-                sys.exit("Ошибка: таблицы candidates нет. Сначала нужно создать базу (docker compose up).")
-            cur.execute("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source_file TEXT")
-            cur.execute("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source_row INTEGER")
-            cur.execute("SELECT count(*) FROM candidates WHERE source_file = %s", (source_file,))
-            existing = cur.fetchone()[0]
-            if existing and not args.replace:
-                sys.exit(f"Ошибка: в базе уже есть {existing} записей из файла «{source_file}». "
-                         f"Чтобы заменить их, добавьте флаг --replace (иначе записи задвоятся).")
-            if existing:
-                cur.execute("DELETE FROM candidates WHERE source_file = %s", (source_file,))
-                print(f"Удалено старых записей из «{source_file}»: {existing}")
-            columns = [f for f in TARGET_FIELDS if any(f in r for _, r in loaded)] if loaded else []
-            cols_sql = ", ".join(columns + ["source_file", "source_row"])
-            values = [tuple(r.get(c) for c in columns) + (source_file, row_num) for row_num, r in loaded]
-            if values:
-                execute_values(cur, f"INSERT INTO candidates ({cols_sql}) VALUES %s", values, page_size=500)
-    finally:
-        conn.close()
+    if not loaded:
+        raise LoaderError(f"нет принятых записей из «{source_file}», в базу ничего не записано.")
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('candidates')")
+        if cur.fetchone()[0] is None:
+            raise LoaderError("таблицы candidates нет. Сначала нужно создать базу (docker compose up).")
+        cur.execute("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source_file TEXT")
+        cur.execute("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source_row INTEGER")
+        cur.execute("SELECT count(*) FROM candidates WHERE source_file = %s", (source_file,))
+        existing = cur.fetchone()[0]
+        if existing and not replace:
+            raise LoaderError(f"в базе уже есть {existing} записей из файла «{source_file}». "
+                              f"Чтобы заменить их, добавьте флаг --replace (иначе записи задвоятся).")
+        if existing:
+            cur.execute("DELETE FROM candidates WHERE source_file = %s", (source_file,))
+        columns = [f for f in TARGET_FIELDS if any(f in r for _, r in loaded)]
+        cols_sql = ", ".join(columns + ["source_file", "source_row"])
+        values = [tuple(r.get(c) for c in columns) + (source_file, row_num) for row_num, r in loaded]
+        execute_values(cur, f"INSERT INTO candidates ({cols_sql}) VALUES %s", values, page_size=500)
+    return existing
 
 
 # ----------------------------- main -----------------------------
@@ -330,8 +371,8 @@ def main():
         args.mapping = str(default)
         print(f"Соответствие выбрано по имени файла: {args.mapping}")
     fields = load_mapping(args.mapping)
-    header, loaded, rejected = read_csv(csv_path, args.delimiter, fields)
-    print_report(csv_path, header, loaded, rejected, fields, args.mapping)
+    header, loaded, rejected, notes = read_csv(csv_path, args.delimiter, fields)
+    print_report(csv_path, header, loaded, rejected, notes, fields, args.mapping)
 
     if rejected:
         rej_path = Path(args.rejected) if args.rejected else Path("data") / f"{csv_path.stem}.rejected.csv"
@@ -349,11 +390,24 @@ def main():
               "(или запустите с --allow-missing-columns, если пустые поля допустимы).")
         if not args.dry_run:
             sys.exit(2)
+    if not loaded:
+        print("\nОСТАНОВКА: ни одна запись не принята, загружать нечего. В базу ничего не записано, "
+              "прежние записи этого файла (если были) сохранены. Причины отклонения — в отчёте выше.")
+        if not args.dry_run:
+            sys.exit(2)
     if args.dry_run:
         print("\nРежим --dry-run: в базу ничего не записано.")
         return
     source_file = args.source_name or csv_path.name
-    write_to_db(args, source_file, loaded)
+    conn = connect(args)
+    try:
+        deleted = write_to_db(conn, source_file, loaded, args.replace)
+    except LoaderError as e:
+        sys.exit(f"\nОшибка: {e}")
+    finally:
+        conn.close()
+    if deleted:
+        print(f"\nУдалено старых записей из «{source_file}»: {deleted}")
     print(f"\nЗагружено в candidates: {len(loaded)} (source_file = «{source_file}»)")
 
 
