@@ -1,0 +1,9 @@
+# Соответствие для loader/examples/candidates_c_minimal.csv: в файле нет статуса, готовности,
+# гражданства, образования и даты рождения. Загрузчик должен сказать об этом, а не придумывать значения.
+fields:
+  last_name: "surname"
+  first_name: "name"
+  residence_area: "district"
+  phone_mobile: "phone"
+  work_text:
+    columns: ["employer", "position"]

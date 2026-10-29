@@ -678,6 +678,10 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         if _normalize_keyword(kw) not in education_terms
     ]
 
+    def _or_null(column, condition):
+        # Пустое поле не исключает кандидата: в файле этих данных может не быть.
+        return or_(column.is_(None), condition)
+
     clauses = []
     age_from = getattr(spec, "age_from", None)
     age_to = getattr(spec, "age_to", None)
@@ -688,47 +692,38 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     elif age_from is None or age_to is None:
         age_from, age_to = 20, 65
     bd_from, bd_to = _age_to_birth_date_bounds(age_from, age_to)
+    age_conditions = []
     if bd_from:
-        clauses.append(C.birth_date >= bd_from)
+        age_conditions.append(C.birth_date >= bd_from)
     if bd_to:
-        clauses.append(C.birth_date <= bd_to)
+        age_conditions.append(C.birth_date <= bd_to)
+    if age_conditions:
+        clauses.append(_or_null(C.birth_date, and_(*age_conditions)))
 
-    if spec.education_count is not None:
-        clauses.append(C.education_count >= spec.education_count)
-    else:
-        clauses.append(C.education_count >= 1)
+    min_education = spec.education_count if spec.education_count is not None else 1
+    clauses.append(_or_null(C.education_count, C.education_count >= min_education))
 
     if spec.confirmed_experience_years_min is not None:
         clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
 
     citizenship_filter = _normalize_filter_value(spec.citizenship)
-    if citizenship_filter is not None:
-        if citizenship_filter == 'рф':
-            clauses.append(func.lower(C.citizenship) == 'рф')
-        elif citizenship_filter == 'другое':
-            clauses.append(
-                and_(
-                    C.citizenship.is_not(None),
-                    func.lower(C.citizenship) != 'рф',
-                )
+    if citizenship_filter is None or citizenship_filter == 'рф':
+        clauses.append(_or_null(C.citizenship, func.lower(C.citizenship) == 'рф'))
+    elif citizenship_filter == 'другое':
+        clauses.append(
+            and_(
+                C.citizenship.is_not(None),
+                func.lower(C.citizenship) != 'рф',
             )
-        else:
-            clauses.append(func.coalesce(C.citizenship, "").ilike(f"%{citizenship_filter}%"))
+        )
     else:
-        clauses.append(func.lower(C.citizenship) == 'рф')
+        clauses.append(_or_null(C.citizenship, func.coalesce(C.citizenship, "").ilike(f"%{citizenship_filter}%")))
 
-    status_filter = _normalize_filter_value(spec.status)
-    if status_filter is not None:
-        clauses.append(func.lower(C.status) == status_filter)
-    else:
-        clauses.append(func.lower(C.status) == 'резервист')
+    status_filter = _normalize_filter_value(spec.status) or 'резервист'
+    clauses.append(_or_null(C.status, func.lower(C.status) == status_filter))
 
-    ready_to_work_filter = _normalize_filter_value(spec.ready_to_work)
-    if ready_to_work_filter is not None:
-        clauses.append(func.lower(C.ready_to_work) == ready_to_work_filter)
-    else:
-        clauses.append(func.lower(C.ready_to_work) == 'годен')
-
+    ready_to_work_filter = _normalize_filter_value(spec.ready_to_work) or 'годен'
+    clauses.append(_or_null(C.ready_to_work, func.lower(C.ready_to_work) == ready_to_work_filter))
 
     def _text_match(keyword: str):
         pattern = f"%{keyword}%"
@@ -920,6 +915,8 @@ def _db_search_impl(
                 "status": c.status,
                 "ready_to_work": c.ready_to_work,
                 "citizenship": c.citizenship,
+                "source_file": c.source_file,
+                "source_row": c.source_row,
             }
             name_parts = [c.last_name, c.first_name, c.middle_name]
             full_name = " ".join([p for p in name_parts if p])

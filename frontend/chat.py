@@ -394,6 +394,9 @@ def _render_candidates(candidates, key_prefix="candidates"):
         with st.container(border=True):
             full_name = _candidate_full_name(candidate)
             st.markdown(f"#### {full_name or '—'}")
+            row = candidate.get("source_row")
+            if row is not None:
+                st.caption(f"Строка {row} · {_display_value(candidate.get('source_file'))}")
             st.markdown(f"**Дата рождения:** {_display_value(candidate.get('birth_date'))}")
             st.markdown(f"**Место проживания:** {_display_value(candidate.get('residence_area'))}")
             st.markdown(f"**Телефон:** {_display_value(_candidate_phones(candidate))}")

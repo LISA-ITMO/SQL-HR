@@ -63,6 +63,8 @@ class CandidateORM(Base):
     citizenship: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[Optional[str]] = mapped_column(Text)
     ready_to_work: Mapped[Optional[str]] = mapped_column(Text)
+    source_file: Mapped[Optional[str]] = mapped_column(Text)
+    source_row: Mapped[Optional[int]] = mapped_column(Integer)
 
 
 # --- Pydantic schemas (JSON-friendly) ---
@@ -106,6 +108,9 @@ class CandidateOut(BaseModel):
     citizenship: Optional[str] = None
     status: Optional[str] = None
     ready_to_work: Optional[str] = None
+
+    source_file: Optional[str] = None
+    source_row: Optional[int] = None
 
 
  # Для совместимости с прежним импортом: Candidate == CandidateOut
