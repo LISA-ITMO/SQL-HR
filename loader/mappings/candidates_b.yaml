@@ -1,0 +1,22 @@
+# Соответствие для loader/examples/candidates_b.csv (другие названия колонок, меньше колонок).
+# Слева поле таблицы candidates, справа колонка CSV.
+fields:
+  last_name: "surname"
+  first_name: "name"
+  middle_name: "patronymic"
+  birth_date: "birth"
+  residence_area: "district"
+  phone_mobile: "phone"
+  email_1: "email"
+  education_text:
+    columns: ["university", "specialty"]
+  education_count:
+    type: count_true
+    columns: ["has_diploma"]
+  work_text:
+    columns: ["employer", "position", "contract"]
+  citizenship: "citizenship"
+  status: "status"
+  ready_to_work: "ready"
+  extra_info_text:
+    columns: ["notes"]
