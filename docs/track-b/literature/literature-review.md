@@ -1,0 +1,35 @@
+# Evidence-grounded KRM assessment: shared review draft
+
+Черновик к [#30](https://github.com/LISA-ITMO/SQL-HR/issues/30) и [#32](https://github.com/LISA-ITMO/SQL-HR/issues/32), 29 октября 2026. Собрала общий текст на основе материалов Антона с помощью Codex. Все исходные работы сохранила в матрице; непроверенные вынесла на лист Backlog. Текст обзора оставила на английском для статьи. Проверка и обсуждение с Кириллом ещё впереди; результатов экспериментов Track B здесь пока нет.
+
+## Proposed introduction
+
+Competency-role models describe expected professional capabilities, but using a role profile to assess an individual requires decisions about documentary support. A project report may mention a technology without establishing the contributor's action, autonomy or attained proficiency. An assessment procedure must distinguish a positive demonstration below the target from evidence that is insufficient to decide. These are different conclusions and should remain distinguishable in later gap analysis.
+
+We propose to study a rubric that links an anonymised artifact fragment to a source-versioned KRM indicator and its behavioural anchor. The first pilot would use a narrow selection of ITMO KRM 3.0 indicators, record exact evidence locations, and compare automated decisions with independent human judgements. Role-level aggregation and any ranking effects are subsequent policies requiring validation. The current five synthetic cases illustrate annotation semantics; they provide no estimate of model accuracy or expert agreement.
+
+## Related work — thematic contribution
+
+**Framework structure and transfer.** In the supplied ITMO 3.0 workbook, role targets and indicator anchors are separate structures; the MIPT role sheets instead attach levels and learning outcomes to indicators. [SFIA 9](https://sfia-online.org/en/sfia-9) uses seven responsibility levels with professional skill descriptions. [ESCO v1.2.1](https://esco.ec.europa.eu/en/classification) provides occupational and skill/knowledge concepts, while [O*NET](https://www.onetcenter.org/content.html) organises occupational descriptors and [e-CF](https://ecfexplorer.itprofessionalism.org/) provides an ICT competence reference. These are normative or descriptive resources, not experimental baselines. Their labels and levels cannot be treated as a common measurement scale. A useful comparison needs to record the source, version and meaning of each level.
+
+**Evidence representation is established prior art.** [Dorn, Naz and Pichlmair (2007)](https://doi.org/10.1142/9789812770592_0010), §§4.1–4.3, already connect occupations, competency levels/grades and individual evidence. [Paquette, Marino and Bejaoui (2021)](https://doi.org/10.1186/s40561-021-00160-z), stages 4–5, provide evidence records, confidence attributes and referential provenance. These works already cover competency evidence and its provenance, so neither concept alone is new. What still needs testing in our application is a concrete decision rubric for source-specific ordinal targets, including how much support is enough and how conflicts are recorded.
+
+**Alignment and matching solve related but distinct tasks.** [Lê, Abel and Laforge (2026)](https://doi.org/10.1007/978-3-032-29744-0_41) align learning fragments to competencies with constrained tagging; mechanical span traceability does not establish semantic sufficiency. [Du, Xin and Wang (2026)](https://arxiv.org/abs/2602.13084) use interview-derived signals for competency modelling; the available version is a preprint. [HRGraph](https://aclanthology.org/2024.kallm-1.6/) and [JobMatchAI](https://aclanthology.org/2026.acl-demo.52/) supply HR extraction/matching comparators. Their bibliographic records and abstracts were checked here; deeper empirical comparisons remain for the methods cluster. A course resource's topic, a recruitment match and a candidate's demonstrated indicator level are different targets, so published scores cannot be compared directly.
+
+**Uncertainty requires an operational meaning.** [Won, An and Lee (2026)](https://arxiv.org/abs/2609.35794), §§3–4, distinguish missing evidence from distracting material in retrieval-augmented answering. This motivates recording why a KRM decision is UNKNOWN, but QA abstention is not itself competency assessment. We propose to test whether explicit separation of target support, positive lower-level support and insufficient evidence improves agreement and reduces unsupported positive judgements. No exhaustive search establishing that this combination has never been studied has been completed.
+
+## Research questions and proposed evaluation
+
+- RQ1: Does an indicator-and-anchor rubric improve agreement with independent assessors compared with flat skill matching and a direct LLM judgement?
+- RQ2: At comparable decision coverage, does the rubric reduce unsupported target-level positives, especially after removing evidence or obscuring individual contribution?
+- RQ3: How often are mechanically valid citations judged semantically sufficient, and how much reviewer time is needed to audit them?
+
+Proposed unit: candidate × indicator × versioned evidence bundle. First measure a three-state confusion matrix and macro-F1, report precision of target support, UNKNOWN precision/recall, source-location validity, human-rated sufficiency and review time. Report lower-level ordinal agreement only on cases with positively supported levels; UNKNOWN is not an ordinal level. Split by candidate/project before constructing evidence variants to prevent leakage. Any ranking evaluation needs a separately agreed expert relevance policy; missing evidence should not silently become a zero skill score.
+
+## Inclusion criteria and integration status
+
+Proposed criteria, awaiting Kirill's agreement: original framework documentation or primary research on competency representation, evidence-to-indicator alignment, HR matching, provenance or insufficient-evidence decisions. Retain older foundational ontology work alongside a separately labelled 2026 search. Exclude marketing summaries and sources without verifiable identity from substantive conclusions. This is a targeted review, not a systematic or exhaustive review.
+
+Source checks performed 29.10.2026: local KRM books and supplied explanatory documents; publisher full text for COMP2; author-uploaded original Dorn paper plus TU Wien metadata; arXiv originals for Lê, Du and Won; publisher metadata for Lê; official framework pages; ACL records/abstracts for HRGraph and JobMatchAI. Search themes included competency/evidence assessment and 2026 abstention. The new Won paper extends Anton's starting bibliography. See `references.md` for precise status and source sections.
+
+Осталось согласовать с Кириллом критерии отбора, роль и целевые уровни, включить его строки по методам и провести взаимную проверку. Мне нужно подтвердить проверки, выполненные с помощью Codex; с Антоном — договориться о новом сроке. В `Verified by` пока указала текущий статус, без отметок о завершённой проверке нами с Кириллом. Утверждение из прежнего `literature.md` об отсутствии аналогичных работ в этот обзор не включала.
