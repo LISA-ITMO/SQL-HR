@@ -417,6 +417,10 @@ class QuerySpec(BaseModel):
         default_factory=list,
         description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
     )
+    residence_keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Город/район проживания: варианты названия, OR внутри списка, AND с профессией и прочими требованиями.",
+    )
     offset: int = Field(
         0,
         ge=0,
@@ -427,19 +431,23 @@ class QuerySpec(BaseModel):
     )
     citizenship: Optional[str] = Field(
         default=None,
-        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
+        description="Явно запрошенное гражданство. Если пользователь не указал — null."
     )
     status: Optional[str] = Field(
         default=None,
-        description="Статус в МКР. Если не указано, будет 'резервист'."
+        description="Явно запрошенный статус в МКР. Если не указан — null."
     )
     ready_to_work: Optional[str] = Field(
         default=None,
-        description="Статус в МКР. Если не указано, будет 'Годен'."
+        description="Явно запрошенная готовность к работе. Если не указана — null."
     )
 
 
 class QuerySpecLite(BaseModel):
+    keywords_all: List[str] = Field(
+        default_factory=list,
+        description="Все обязательные слова профессии/навыков. Явные требования сохраняются и в fallback.",
+    )
     age_from: Optional[int] = Field(
         default=None,
         ge=0,
@@ -474,6 +482,10 @@ class QuerySpecLite(BaseModel):
         default_factory=list,
         description="Ключевые слова про образование, из которых хотя бы одно должно встретиться в education_text.",
     )
+    residence_keywords_any: List[str] = Field(
+        default_factory=list,
+        description="Город/район проживания: варианты названия, OR внутри списка, AND с профессией и прочими требованиями.",
+    )
     offset: int = Field(
         0,
         ge=0,
@@ -484,19 +496,23 @@ class QuerySpecLite(BaseModel):
     )
     citizenship: Optional[str] = Field(
         default=None,
-        description="Гражданство. Если не указано, будет применен стандарт 'РФ'."
+        description="Явно запрошенное гражданство. Если пользователь не указал — null."
     )
     status: Optional[str] = Field(
         default=None,
-        description="Статус в МКР. Если не указано, будет 'резервист'."
+        description="Явно запрошенный статус в МКР. Если не указан — null."
     )
     ready_to_work: Optional[str] = Field(
         default=None,
-        description="Статус в МКР. Если не указано, будет 'Годен'."
+        description="Явно запрошенная готовность к работе. Если не указана — null."
     )
 
 
 class QuerySpecBundle(BaseModel):
+    unsupported_requirements: List[str] = Field(
+        default_factory=list,
+        description="Явные требования, которые нельзя проверить поддерживаемыми полями поиска, например уровень иностранного языка. Не теряй их и не заменяй ключевыми словами.",
+    )
     ideal_spec: QuerySpec = Field(description="Идеальный кандидат (строже требований).")
     match_spec: QuerySpec = Field(description="Соответствует требованиям.")
     fallback_spec: QuerySpecLite = Field(description="Чуть ниже требований.")
@@ -678,13 +694,14 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
         if _normalize_keyword(kw) not in education_terms
     ]
 
-    def _or_null(column, condition):
-        # Пустое поле не исключает кандидата: в файле этих данных может не быть.
-        return or_(column.is_(None), condition)
+    def _default_or_explicit(column, condition, explicit):
+        # Unknown may pass a default, but never confirms an explicit requirement.
+        return condition if explicit else or_(column.is_(None), condition)
 
     clauses = []
     age_from = getattr(spec, "age_from", None)
     age_to = getattr(spec, "age_to", None)
+    explicit_age = age_from is not None or age_to is not None
     if age_from is not None or age_to is not None:
         if age_from is not None and age_to is not None and age_from > age_to:
             logger.info("age_from > age_to; swapping bounds: %s > %s", age_from, age_to)
@@ -698,17 +715,17 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     if bd_to:
         age_conditions.append(C.birth_date <= bd_to)
     if age_conditions:
-        clauses.append(_or_null(C.birth_date, and_(*age_conditions)))
+        clauses.append(_default_or_explicit(C.birth_date, and_(*age_conditions), explicit_age))
 
     min_education = spec.education_count if spec.education_count is not None else 1
-    clauses.append(_or_null(C.education_count, C.education_count >= min_education))
+    clauses.append(_default_or_explicit(C.education_count, C.education_count >= min_education, spec.education_count is not None))
 
     if spec.confirmed_experience_years_min is not None:
         clauses.append(C.confirmed_experience_years >= spec.confirmed_experience_years_min)
 
     citizenship_filter = _normalize_filter_value(spec.citizenship)
     if citizenship_filter is None or citizenship_filter == 'рф':
-        clauses.append(_or_null(C.citizenship, func.lower(C.citizenship) == 'рф'))
+        clauses.append(_default_or_explicit(C.citizenship, func.lower(C.citizenship) == 'рф', citizenship_filter is not None))
     elif citizenship_filter == 'другое':
         clauses.append(
             and_(
@@ -717,13 +734,13 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
             )
         )
     else:
-        clauses.append(_or_null(C.citizenship, func.coalesce(C.citizenship, "").ilike(f"%{citizenship_filter}%")))
+        clauses.append(C.citizenship.ilike(f"%{citizenship_filter}%"))
 
     status_filter = _normalize_filter_value(spec.status) or 'резервист'
-    clauses.append(_or_null(C.status, func.lower(C.status) == status_filter))
+    clauses.append(_default_or_explicit(C.status, func.lower(C.status) == status_filter, bool(_normalize_filter_value(spec.status))))
 
     ready_to_work_filter = _normalize_filter_value(spec.ready_to_work) or 'годен'
-    clauses.append(_or_null(C.ready_to_work, func.lower(C.ready_to_work) == ready_to_work_filter))
+    clauses.append(_default_or_explicit(C.ready_to_work, func.lower(C.ready_to_work) == ready_to_work_filter, bool(_normalize_filter_value(spec.ready_to_work))))
 
     def _text_match(keyword: str):
         pattern = f"%{keyword}%"
@@ -758,15 +775,75 @@ def get_from_query(spec: QuerySpec | QuerySpecLite, session: Session) -> List[Ca
     if education_any_clauses:
         clauses.append(or_(*education_any_clauses))
 
+    residence_clauses = [C.residence_area.ilike(f"%{kw}%") for kw in _clean_keywords(spec.residence_keywords_any)]
+    if residence_clauses:
+        clauses.append(or_(*residence_clauses))
+
     stmt = select(C)
     if clauses:
         stmt = stmt.where(and_(*clauses))
     if int(spec.offset or 0) > 0:
         stmt = stmt.offset(int(spec.offset))
-    stmt = stmt.limit(20)
+    stmt = stmt.order_by(C.id).limit(20)
 
     rows = session.scalars(stmt).all()
     return [CandidateOut.model_validate(r) for r in rows]
+
+
+def _preserve_requirements(spec: QuerySpec | QuerySpecLite, required: QuerySpec) -> QuerySpec | QuerySpecLite:
+    """Keep the first match constraints even if a later LLM variant drops them."""
+    updates = {}
+    for field in ("age_from", "age_to", "education_count", "confirmed_experience_years_min",
+                  "citizenship", "status", "ready_to_work"):
+        value = getattr(required, field)
+        if value is not None and (not isinstance(value, str) or value.strip()):
+            updates[field] = value
+    if required.age_from is not None or required.age_to is not None:
+        # Preserve the pair, including an open bound. Otherwise a model's conflicting
+        # extra bound could trigger range swapping and weaken the user's condition.
+        updates.update(age_from=required.age_from, age_to=required.age_to)
+    # OR lists describe alternatives for one constraint; retain that constraint.
+    for field in ("keywords_any", "education_keywords_any", "residence_keywords_any"):
+        value = getattr(required, field)
+        if value:
+            updates[field] = value
+    # Additional AND / NOT constraints may make the ideal variant stricter.
+    for field in ("keywords_all", "keywords_not"):
+        updates[field] = list(dict.fromkeys(getattr(required, field) + getattr(spec, field)))
+    return spec.model_copy(update=updates)
+
+
+def _unavailable_fields(spec: QuerySpec, session: Session) -> List[str]:
+    required = []
+    if spec.age_from is not None or spec.age_to is not None:
+        required.append((C.birth_date, "возраст", False))
+    if spec.education_count is not None:
+        required.append((C.education_count, "количество образований", False))
+    if spec.confirmed_experience_years_min is not None:
+        required.append((C.confirmed_experience_years, "стаж", False))
+    for value, column, label in (
+        (spec.citizenship, C.citizenship, "гражданство"),
+        (spec.status, C.status, "статус",),
+        (spec.ready_to_work, C.ready_to_work, "готовность к работе"),
+        (spec.residence_keywords_any, C.residence_area, "место проживания"),
+        (spec.education_keywords_any, C.education_text, "образование"),
+    ):
+        if value and (not isinstance(value, str) or value.strip()):
+            required.append((column, label, True))
+    if not required:
+        return []
+    counts = session.execute(select(func.count(C.id), *[
+        func.count(func.nullif(func.trim(column), "") if is_text else column)
+        for column, _, is_text in required
+    ])).one()
+    # An empty database is different from populated profiles lacking a field.
+    return [label for (_, label, _), count in zip(required, counts[1:]) if counts[0] and not count]
+
+
+def _missing_data_report(requirements: List[str]) -> str:
+    return ("Недостаточно данных для проверки требований: " + "; ".join(requirements)
+            + ". Подбор с этими требованиями не выполнен. Добавьте необходимые данные "
+              "и поддержку их проверки; отсутствие сведений не означает отсутствие подходящих кандидатов.")
 
 
 def fetch_candidates_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
@@ -859,6 +936,8 @@ class SubState(TypedDict, total=False):
     user_question: str
     session_id: str
     cancelled: bool
+    missing_data: bool
+    required_spec: Dict[str, Any]
 
 
 # ------------------------
@@ -873,6 +952,8 @@ def _db_search_impl(
     session_id: Optional[str],
     query: Optional[str] = None,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    ideal_spec = _preserve_requirements(ideal_spec, match_spec)
+    fallback_spec = _preserve_requirements(fallback_spec, match_spec)
     logger.info(
         "db_search start ideal_keywords_any=%s match_keywords_any=%s fallback_keywords_any=%s ideal_education_keywords_any=%s match_education_keywords_any=%s fallback_education_keywords_any=%s",
         len(ideal_spec.keywords_any or []),
@@ -1073,7 +1154,9 @@ def sub_agent_node(state: SubState) -> SubState:
     # Force selection on the last try.
     if iters_left <= 1:
         msgs.append(HumanMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
-    llm_structured = llm.with_structured_output(QuerySpecBundle)
+    # OpenAI-compatible adapters may ignore json_schema and return Markdown.
+    # Tool calling is already used by the main agent and parses structured args.
+    llm_structured = llm.with_structured_output(QuerySpecBundle, method="function_calling")
     try:
         response = llm_structured.invoke(msgs)
     except Exception as exc:
@@ -1104,11 +1187,27 @@ def sub_agent_node(state: SubState) -> SubState:
             )
         response = llm_structured.invoke(retry_msgs)
     session_id = state.get("session_id")
-    ideal_spec = response.ideal_spec
-    match_spec = response.match_spec
-    fallback_spec = response.fallback_spec
-    query_dump = response.model_dump(mode="json")
+    required_spec = QuerySpec.model_validate(state.get("required_spec") or response.match_spec.model_dump())
+    ideal_spec = _preserve_requirements(response.ideal_spec, required_spec)
+    match_spec = _preserve_requirements(response.match_spec, required_spec)
+    fallback_spec = _preserve_requirements(response.fallback_spec, required_spec)
+    query_dump = response.model_copy(update={
+        "ideal_spec": ideal_spec, "match_spec": match_spec, "fallback_spec": fallback_spec,
+    }).model_dump(mode="json")
     task = state.get("task")
+    unavailable = list(response.unsupported_requirements)
+    if not unavailable:
+        with SessionLocal() as session:
+            unavailable = _unavailable_fields(match_spec, session)
+    if unavailable:
+        return {
+            "messages": [AIMessage(content=f"QuerySpec:\n{json.dumps(query_dump, ensure_ascii=False)}")],
+            "report": _missing_data_report(unavailable),
+            "missing_data": True,
+            "iterations_left": 0,
+            "candidates": [],
+            "session_id": session_id,
+        }
     result, best_candidates = _db_search_impl(
         ideal_spec=ideal_spec,
         match_spec=match_spec,
@@ -1130,6 +1229,7 @@ def sub_agent_node(state: SubState) -> SubState:
         "iterations_left": int(state.get("iterations_left", 0)) - 1,
         "session_id": state.get("session_id"),
         "candidates": best_candidates,
+        "required_spec": required_spec.model_dump(mode="json"),
     }
     logger.info(
         "node=sub_agent_node done iterations_left=%s tool_calls=%s",
@@ -1158,6 +1258,10 @@ def sub_report_node(state: SubState) -> SubState:
         _write_sub_agent_report(report_note, msgs, task, session_id=session_id)
         logger.info("node=sub_report_node cancelled report_len=%s", len(report_note))
         return {"report": "", "cancelled": True}
+    if state.get("missing_data"):
+        report = str(state.get("report") or "")
+        _write_sub_agent_report(report, msgs, str(state.get("task") or ""), session_id=session_id)
+        return {"report": report}
     # LLM-based reports are disabled; main agent will interpret tool payloads.
     # --- previously:
     # tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
@@ -1297,9 +1401,11 @@ def find_candidates(
     except Exception:
         logger.exception("tool=find_candidates failed in sub-graph")
         result = {
-            "report": "Поиск временно недоступен: ошибка генерации фильтров. Попробуйте упростить запрос.",
+            "report": "Поиск временно недоступен: произошла техническая ошибка. "
+                      "Поиск не завершён; это не означает, что подходящих кандидатов нет.",
             "candidates": [],
             "cancelled": False,
+            "search_error": True,
         }
     finally:
         _set_search_in_progress(session_id, False)
@@ -1307,8 +1413,10 @@ def find_candidates(
         "report": result.get("report", ""),
         "candidates": [],
         "cancelled": bool(result.get("cancelled")),
+        "search_error": bool(result.get("search_error")),
+        "missing_data": bool(result.get("missing_data")),
     }
-    full_candidates = result.get("candidates", [])
+    full_candidates = [] if (payload["missing_data"] or payload["search_error"]) else result.get("candidates", [])
     compact_candidates: List[Dict[str, Any]] = []
     if isinstance(full_candidates, list):
         for candidate in full_candidates:
@@ -1586,6 +1694,8 @@ def _main_after_tools_router(state: MainState) -> Literal["agent", "end"]:
         if isinstance(msg, ToolMessage) and _tool_name(msg) == "find_candidates":
             payload = _parse_tool_payload(msg.content)
             cancelled = bool(payload.get("cancelled")) if isinstance(payload, dict) else False
+            if isinstance(payload, dict) and (payload.get("search_error") or payload.get("missing_data")):
+                return "end"
             break
     if cancelled:
         logger.info("node=_main_after_tools_router route=end cancelled=true")
@@ -1800,6 +1910,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
     )
     report = find_payload.get("report", "") if isinstance(find_payload, dict) else ""
     cancelled = bool(find_payload.get("cancelled")) if isinstance(find_payload, dict) else False
+    if isinstance(find_payload, dict) and (find_payload.get("search_error") or find_payload.get("missing_data")):
+        # Preserve a factual diagnostic; do not let the model turn it into "no matches".
+        answer = report
+        ai_msgs = [AIMessage(content=answer)]
+        candidate_payload = {"candidates": []}
+        session_data["pending_candidates"] = []
+        session_data["pending_candidate_ids"] = []
 
     if cancelled:
         tool_call_msg, tool_result_msg = _find_tool_pair(new_messages, "find_candidates")

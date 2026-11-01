@@ -264,7 +264,9 @@ def find_mapped_files():
     for mapping_path in sorted((LOADER_DIR / "mappings").glob("*.yaml")):
         found = [d / f"{mapping_path.stem}.csv" for d in CSV_DIRS if (d / f"{mapping_path.stem}.csv").is_file()]
         marks = [] if found else [pytest.mark.skip(reason=f"нет CSV для {mapping_path.name} в data/ и loader/examples/")]
-        params.append(pytest.param(found[0] if found else None, mapping_path, id=mapping_path.stem, marks=marks))
+        for csv_path in found or [None]:
+            case_id = mapping_path.stem if csv_path is None else f"{mapping_path.stem}-{csv_path.parent.name}"
+            params.append(pytest.param(csv_path, mapping_path, id=case_id, marks=marks))
     return params
 
 
@@ -273,11 +275,11 @@ MAPPED_FILES = find_mapped_files()
 
 def read_mapped_file(csv_path, mapping_path):
     fields = load_csv.load_mapping(mapping_path)
-    return fields, load_csv.read_csv(csv_path, ";", fields)
+    return fields, load_csv.read_csv(csv_path, load_csv.mapping_delimiter(mapping_path), fields)
 
 
 def test_known_files_are_found():
-    found = {p.id for p in MAPPED_FILES if not p.marks}
+    found = {p.values[1].stem for p in MAPPED_FILES if not p.marks}
     assert sorted(set(EXPECTED) - found) == [], "известный CSV или его YAML пропал"
 
 
@@ -302,7 +304,7 @@ def test_mapped_file_is_read_with_its_mapping(csv_path, mapping_path):
 def test_mapped_file_source_row_points_to_its_line(csv_path, mapping_path):
     fields, (header, loaded, rejected, notes) = read_mapped_file(csv_path, mapping_path)
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        raw = {num: row for num, row in enumerate(csv.reader(f, delimiter=";"), start=1)}
+        raw = {num: row for num, row in enumerate(csv.reader(f, delimiter=load_csv.mapping_delimiter(mapping_path)), start=1)}
     surname_col = header.index(fields["last_name"]["columns"][0])
 
     numbers = sorted([row for row, _ in loaded] + [row for row, *_ in rejected])
@@ -318,3 +320,34 @@ def test_mapped_file_loads_into_db(db_conn, tmp_path, monkeypatch, csv_path, map
 
     _, (_, loaded, _, _) = read_mapped_file(csv_path, mapping_path)
     assert rows_of(db_conn, csv_path.name) == [(r.get("last_name"), row_num) for row_num, r in loaded]
+
+
+def test_hh_example_cli_uses_mapping_delimiter(tmp_path, monkeypatch, capsys):
+    csv_path = LOADER_DIR / "examples" / "candidates_hh.csv"
+    monkeypatch.setattr(sys, "argv", ["load_csv.py", str(csv_path), "--dry-run",
+                                    "--rejected", str(tmp_path / "rejected.csv")])
+    load_csv.main()
+    output = capsys.readouterr().out
+    assert "колонок: 17" in output
+    assert "ОСТАНОВКА" not in output
+    assert "Режим --dry-run" in output
+    assert not (tmp_path / "rejected.csv").exists()
+
+
+def test_cli_delimiter_override_takes_precedence(tmp_path, monkeypatch, capsys):
+    mapping = tmp_path / "people.yaml"
+    mapping.write_text('delimiter: ","\nfields:\n  last_name: surname\n', encoding="utf-8")
+    csv_path = write_csv(tmp_path / "people.csv", ["surname;unused", "Example;value"])
+    monkeypatch.setattr(sys, "argv", ["load_csv.py", str(csv_path), "--mapping", str(mapping),
+                                    "--delimiter", ";", "--dry-run"])
+    load_csv.main()
+    assert "ОСТАНОВКА" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("delimiter", ["", ";;", "\n"])
+def test_invalid_mapping_delimiter_is_rejected(tmp_path, delimiter):
+    mapping = tmp_path / "people.yaml"
+    import yaml
+    mapping.write_text(yaml.safe_dump({"delimiter": delimiter, "fields": {"last_name": "surname"}}))
+    with pytest.raises(SystemExit, match="разделитель"):
+        load_csv.mapping_delimiter(mapping)

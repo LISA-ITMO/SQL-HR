@@ -39,8 +39,8 @@ FALSE_VALUES = {"false", "f", "0", "no", "нет", "ложь", "неверно"}
 UNKNOWN_VALUES = {"неизвестно", "нет данных", "н/д", "unknown"}
 
 # Поля, по которым SQL-HR фильтрует кандидатов, если в запросе не указано иное
-# (agent_server/main.py, get_from_query). Если поле пустое у всех записей файла,
-# поиск по умолчанию не вернёт ни одну из них.
+# (agent_server/main.py, get_from_query). Пустое поле допустимо для defaults,
+# но не подтверждает явно заданное требование.
 SEARCH_DEFAULTS = {
     "birth_date": "возраст 20–65 лет",
     "education_count": "не меньше одного образования",
@@ -51,6 +51,16 @@ SEARCH_DEFAULTS = {
 
 
 # ----------------------------- соответствие колонок -----------------------------
+
+def mapping_delimiter(path, override=None):
+    """CLI override, then YAML delimiter, then the legacy semicolon default."""
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    delimiter = override if override is not None else data.get("delimiter", ";")
+    if not isinstance(delimiter, str) or len(delimiter) != 1 or delimiter in "\r\n":
+        sys.exit("Ошибка: разделитель CSV должен быть одним символом, кроме перевода строки.")
+    return delimiter
+
 
 def default_type(field):
     if field in DATE_FIELDS:
@@ -272,8 +282,8 @@ def print_report(csv_path, header, loaded, rejected, notes, fields, mapping_path
     for field, rule in SEARCH_DEFAULTS.items():
         filled = sum(1 for _, r in loaded if r.get(field) is not None) if field in fields else 0
         if filled == 0 and loaded:
-            warnings.append(f"поле {field} не заполнено ни у одной записи: поиск по умолчанию "
-                            f"({rule}) не вернёт записи этого файла")
+            warnings.append(f"поле {field} не заполнено ни у одной записи: соответствие явному требованию "
+                            f"({rule}) проверить нельзя; пустое значение не подтверждает соответствие")
     print(f"\nКолонок CSV, не использованных в соответствии: {len(unused)} из {len(header)}")
     if 0 < len(unused) <= 12:
         print("  не использованы: " + ", ".join(unused))
@@ -349,7 +359,7 @@ def main():
     p = argparse.ArgumentParser(description="Загрузка CSV в таблицу candidates по файлу соответствия колонок.")
     p.add_argument("csv_path", help="путь к CSV")
     p.add_argument("--mapping", help="YAML с соответствием колонок (по умолчанию loader/mappings/<имя CSV>.yaml)")
-    p.add_argument("--delimiter", default=";", help="разделитель CSV (по умолчанию ;)")
+    p.add_argument("--delimiter", help="разделитель CSV (приоритет: флаг, delimiter в YAML, затем ;)")
     p.add_argument("--source-name", help="значение source_file (по умолчанию имя CSV)")
     p.add_argument("--rejected", help="куда записать отклонённые записи (по умолчанию data/<имя>.rejected.csv)")
     p.add_argument("--dry-run", action="store_true", help="только проверить файл и показать отчёт, в БД не писать")
@@ -371,7 +381,7 @@ def main():
         args.mapping = str(default)
         print(f"Соответствие выбрано по имени файла: {args.mapping}")
     fields = load_mapping(args.mapping)
-    header, loaded, rejected, notes = read_csv(csv_path, args.delimiter, fields)
+    header, loaded, rejected, notes = read_csv(csv_path, mapping_delimiter(args.mapping, args.delimiter), fields)
     print_report(csv_path, header, loaded, rejected, notes, fields, args.mapping)
 
     if rejected:

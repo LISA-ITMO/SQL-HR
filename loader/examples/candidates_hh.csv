@@ -1,0 +1,4 @@
+candidate_id,sex,city,work_experience_years,education_level_and_university,desired_position,last_job_title,last_company,employment_type,work_schedule,work_experience,age,expected_salary_rub,ready_to_relocate,ready_for_business_trips,has_car,resume_updated_at
+synthetic-001,мужской,Москва,6,"Бакалавр, учебный вуз",Сетевой администратор,Системный администратор,Учебная компания,полная занятость,полный день,"Сети, маршрутизаторы",30,100000,нет,да,нет,2026-01-01
+synthetic-002,женский,Казань,3,"Магистр, учебный вуз",Сетевой администратор,Администратор,Учебная компания,полная занятость,полный день,Сети,27,80000,да,да,нет,2026-01-01
+synthetic-003,женский,Москва,2,"Бакалавр, учебный вуз",Бухгалтер,Бухгалтер,Учебная компания,частичная занятость,гибкий,Отчётность,25,60000,нет,нет,нет,2026-01-01
