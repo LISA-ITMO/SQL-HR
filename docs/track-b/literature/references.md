@@ -22,7 +22,7 @@
 
 [11] Cao, Y., Chen, X., Du, L., Chen, H., Fu, Q., Han, S., Du, Y., Kang, Y., Lu, G., & Li, Z. (2024). TAROT: A Hierarchical Framework with Multitask Co-Pretraining on Semi-Structured Data towards Effective Person-Job Fit. Proceedings of ICASSP 2024, 12046–12050. DOI: https://doi.org/10.1109/ICASSP48485.2024.10447647; URL: https://arxiv.org/pdf/2401.07525v2
 
-[12] Felfernig, A., & Burke, R. (2008). Constraint-based recommender systems: technologies and research issues. Proceedings of the 10th International Conference on Electronic Commerce (ICEC 2008). DOI: https://doi.org/10.1145/1409540.1409544; URL: https://tugraz.elsevierpure.com/en/publications/constraint-based-recommender-systems-technologies-and-research-is/
+[12] Felfernig, A., & Burke, R. (2008). Constraint-based recommender systems: technologies and research issues. Proceedings of the 10th International Conference on Electronic Commerce (ICEC 2008), 17–26. DOI: https://doi.org/10.1145/1409540.1409544; URL: https://tugraz.elsevierpure.com/en/publications/constraint-based-recommender-systems-technologies-and-research-is/
 
 [13] Uta, M., Felfernig, A., Le, V.-M., Tran, T. N. T., Garber, D., Lubos, S., & Burgstaller, T. (2024). Knowledge-based recommender systems: overview and research directions. Frontiers in Big Data, 7, 1304439. DOI: https://doi.org/10.3389/fdata.2024.1304439; URL: https://www.frontiersin.org/journals/big-data/articles/10.3389/fdata.2024.1304439/full
 
@@ -30,16 +30,16 @@
 
 [15] Wen, B., Yao, J., Feng, S., Xu, C., Tsvetkov, Y., Howe, B., & Wang, L. L. (2025). Know Your Limits: A Survey of Abstention in Large Language Models. Transactions of the Association for Computational Linguistics, 13, 529–556. DOI: https://doi.org/10.1162/tacl_a_00754; URL: https://aclanthology.org/2025.tacl-1.26/
 
-[16] ITMO. KRM 3.0. Supplied competency-role workbook, release date not established. https://drive.google.com/drive/folders/16Rv6Z7DgdF_Khrqc7uslbKaa2tCkWCPu
+[16] ITMO University. KRM 3.0: Competency-role model (workbook). https://drive.google.com/drive/folders/16Rv6Z7DgdF_Khrqc7uslbKaa2tCkWCPu
 
-[17] MIPT. (2025, explanatory note). IT competency-role materials. Model version not established; source snapshot c13764b4002a20a9295e06186108cced0b7f05b9. https://github.com/FDAPolytech/AI_in_the_dev_ITMO/tree/c13764b4002a20a9295e06186108cced0b7f05b9
+[17] MIPT. (2025). IT competency-role materials (professional competency matrices and explanatory note). https://github.com/FDAPolytech/AI_in_the_dev_ITMO/tree/c13764b4002a20a9295e06186108cced0b7f05b9
 
 [18] SFIA Foundation. (2024). SFIA 9. https://sfia-online.org/en/sfia-9
 
-[19] European Commission. ESCO classification, v1.2.1 (version recorded in the 29 October 2026 source check). https://esco.ec.europa.eu/en/classification
+[19] European Commission. ESCO classification, v1.2.1. https://esco.ec.europa.eu/en/classification
 
-[20] O*NET Resource Center. O*NET Content Model. Online model; database release not established. https://www.onetcenter.org/content.html
+[20] O*NET Resource Center. O*NET Content Model. https://www.onetcenter.org/content.html
 
-[21] CEN / IT Professionalism Europe. European e-Competence Framework. e-CF Explorer; displayed standard edition not established. https://ecfexplorer.itprofessionalism.org/
+[21] CEN / IT Professionalism Europe. European e-Competence Framework (e-CF), e-CF Explorer. https://ecfexplorer.itprofessionalism.org/
 
-[22] Won, J., An, S. G., & Lee, J.-Y. (2026). Sieve and Sage: Efficient Distraction Filtering for Reliable RALM Abstention. arXiv:2609.35794v1. DOI: https://doi.org/10.48550/arXiv.2609.35794. Preprint; Findings of EMNLP 2026 acceptance reported by authors in the recorded source check; proceedings not independently verified.
+[22] Won, J., An, S. G., & Lee, J.-Y. (2026). Sieve and Sage: Efficient Distraction Filtering for Reliable RALM Abstention. Findings of the Association for Computational Linguistics: EMNLP 2026, 50655–50674. https://doi.org/10.18653/2026.findings-emnlp.2356
