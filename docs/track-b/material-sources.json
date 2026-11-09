@@ -37,12 +37,6 @@
       "source": "research/articles/2605.28483v1.pdf",
       "source_sha256": "8e84190496ec47179cd95e99bdb8866d0967825d6d694d0087d29b4b8e8bc5a8",
       "copy_sha256": "8e84190496ec47179cd95e99bdb8866d0967825d6d694d0087d29b4b8e8bc5a8"
-    },
-    {
-      "file": "frameworks/itmo-krm-3.0.xlsx",
-      "source": "КРМ/итмо/КРМ-версия3.0 (2).xlsx",
-      "source_sha256": "3fb4e5a14449459e5ecfdf4e01f82038aefa949eded9db812ad2deb14e5ad3eb",
-      "copy_sha256": "3fb4e5a14449459e5ecfdf4e01f82038aefa949eded9db812ad2deb14e5ad3eb"
     }
   ]
 }
