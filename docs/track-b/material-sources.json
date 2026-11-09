@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-09",
+  "source_collection": "research_context",
+  "files": [
+    {
+      "file": "concept_ru.md",
+      "source": "research/ideas/research/two_research_tracks_2026/02_track_B_krm_evidence/concept_ru.md",
+      "source_sha256": "9a96369ba5e7d9ae3cdc75b868b12fd531cc2c5e15f967998d05250fd8886957",
+      "copy_sha256": "4dca73d1989ca6dad14e5a6651cce28dc077196ea167d882449fbd03d0fcd080"
+    },
+    {
+      "file": "method_ru.md",
+      "source": "research/ideas/research/two_research_tracks_2026/02_track_B_krm_evidence/method_ru.md",
+      "source_sha256": "5146993839ad7236a98fdfda747574551c95a28b92219cc816f333151124ec8f",
+      "copy_sha256": "8f5dec85cdfaeed9060bbfda47aa523047abee1f5ba26c176cfe73edd6e96c0e"
+    },
+    {
+      "file": "02.1_neurosymbolic_evidence_assessment/README.md",
+      "source": "research/ideas/research/two_research_tracks_2026/02_track_B_krm_evidence/02.1_neurosymbolic_evidence_assessment/README.md",
+      "source_sha256": "54ccf9bfac8ac4e611422dc48df689bee4f9d5922170f55053146a657fe324fd",
+      "copy_sha256": "743c2fc93ccc06a62dc38919e0907e121311201208ec0ba112a8fc80d0ab6127"
+    },
+    {
+      "file": "drafts/anton-neurosymbolic-idea.pdf",
+      "source": "research/ideas/research/two_research_tracks_2026/drafts/Идея для обсуждения.pdf",
+      "source_sha256": "89b89d68f9c0f7bc8f1faa63ce3b5ea1d0fd9b1826d987c19ea5e8f403b986f6",
+      "copy_sha256": "89b89d68f9c0f7bc8f1faa63ce3b5ea1d0fd9b1826d987c19ea5e8f403b986f6"
+    },
+    {
+      "file": "drafts/kirill-competency-graphs-masking-v2.pdf",
+      "source": "research/ideas/research/two_research_tracks_2026/drafts/Гипотеза_графы_компетенций_и_маскирование_исправленная_v2.pdf",
+      "source_sha256": "dc89b3b9523905bc094e87a181a53d627516ce523e492b0c5f8a62b0216dea38",
+      "copy_sha256": "dc89b3b9523905bc094e87a181a53d627516ce523e492b0c5f8a62b0216dea38"
+    },
+    {
+      "file": "articles/2605.28483v1.pdf",
+      "source": "research/articles/2605.28483v1.pdf",
+      "source_sha256": "8e84190496ec47179cd95e99bdb8866d0967825d6d694d0087d29b4b8e8bc5a8",
+      "copy_sha256": "8e84190496ec47179cd95e99bdb8866d0967825d6d694d0087d29b4b8e8bc5a8"
+    },
+    {
+      "file": "frameworks/itmo-krm-3.0.xlsx",
+      "source": "КРМ/итмо/КРМ-версия3.0 (2).xlsx",
+      "source_sha256": "3fb4e5a14449459e5ecfdf4e01f82038aefa949eded9db812ad2deb14e5ad3eb",
+      "copy_sha256": "3fb4e5a14449459e5ecfdf4e01f82038aefa949eded9db812ad2deb14e5ad3eb"
+    }
+  ]
+}
