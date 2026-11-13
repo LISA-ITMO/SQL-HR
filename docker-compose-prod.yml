@@ -63,6 +63,7 @@ services:
         condition: service_started
     volumes:
       - ${RESULTS_DIR:-./results}:/results
+      - ${CROSS_ENCODER_CACHE_HOST_DIR:-reranker_mmarco}:${CROSS_ENCODER_CACHE_DIR:-/models/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
 
   frontend:
     image: jgsnapp/sql-hr-frontend:latest
@@ -75,3 +76,6 @@ services:
         condition: service_started
     ports:
       - "8501:8501"
+
+volumes:
+  reranker_mmarco:

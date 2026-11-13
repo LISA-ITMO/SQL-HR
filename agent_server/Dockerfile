@@ -10,8 +10,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
     && pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p /home/app/hf-cache \
-    && chown -R app:app /home/app /app
+RUN mkdir -p /home/app/hf-cache /models/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 \
+    && chown -R app:app /home/app /app /models
 
 COPY --chown=app:app . ./
 

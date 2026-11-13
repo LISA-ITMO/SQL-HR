@@ -11,3 +11,5 @@ data/*
 
 __pycache__/
 *.pyc
+# Downloaded reranker weights stay local.
+cross-encoder/

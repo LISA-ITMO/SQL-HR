@@ -59,6 +59,7 @@ services:
       REPORT_DIR: /results
     volumes:
       - ${RESULTS_DIR:-./results}:/results
+      - ${CROSS_ENCODER_CACHE_HOST_DIR:-reranker_mmarco}:${CROSS_ENCODER_CACHE_DIR:-/models/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')\""]
       interval: 15s
@@ -118,4 +119,5 @@ services:
       - pgadmin_data:/var/lib/pgadmin
 
 volumes:
+  reranker_mmarco:
   pgadmin_data:

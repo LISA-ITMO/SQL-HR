@@ -5,4 +5,5 @@ langchain_community
 langchain-openai
 fastapi
 uvicorn
-sentence-transformers>=2.2.0
+sentence-transformers>=3.0.0
+huggingface-hub>=0.23.0
