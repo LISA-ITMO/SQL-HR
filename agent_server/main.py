@@ -1011,7 +1011,9 @@ def sub_agent_node(state: SubState) -> SubState:
     # Force selection on the last try.
     if iters_left <= 1:
         msgs.append(SystemMessage(content=SUB_AGENT_LAST_TRY_PROMPT))
-    llm_structured = llm.with_structured_output(QuerySpecBundle)
+    llm_structured = llm.with_structured_output(
+        QuerySpecBundle, method=os.getenv("LLM_STRUCTURED_METHOD", "function_calling")
+    )
     try:
         response = llm_structured.invoke(msgs)
     except Exception as exc:
