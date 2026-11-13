@@ -960,6 +960,15 @@ def db_search(
 # ------------------------
 
 
+def _prepare_structured_messages(messages: List[AnyMessage]) -> List[AnyMessage]:
+    """Keep system instructions first and avoid assistant prefill on later searches."""
+    instructions = [str(msg.content) for msg in messages if isinstance(msg, SystemMessage)]
+    dialogue = [msg for msg in messages if not isinstance(msg, SystemMessage)]
+    if dialogue and isinstance(dialogue[-1], AIMessage):
+        dialogue.append(HumanMessage(content="Сформируй следующий вариант условий поиска для исходного запроса."))
+    return ([SystemMessage(content="\n\n".join(instructions))] if instructions else []) + dialogue
+
+
 @timed_node("sub.agent")
 def sub_agent_node(state: SubState) -> SubState:
     logger.info(
@@ -1015,7 +1024,7 @@ def sub_agent_node(state: SubState) -> SubState:
         QuerySpecBundle, method=os.getenv("LLM_STRUCTURED_METHOD", "function_calling")
     )
     try:
-        response = llm_structured.invoke(msgs)
+        response = llm_structured.invoke(_prepare_structured_messages(msgs))
     except Exception as exc:
         # Some providers return truncated JSON for structured output when
         # generation hits the completion length limit.
@@ -1042,7 +1051,7 @@ def sub_agent_node(state: SubState) -> SubState:
                     )
                 )
             )
-        response = llm_structured.invoke(retry_msgs)
+        response = llm_structured.invoke(_prepare_structured_messages(retry_msgs))
     session_id = state.get("session_id")
     ideal_spec = response.ideal_spec
     match_spec = response.match_spec

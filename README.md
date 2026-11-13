@@ -186,3 +186,7 @@ RERANKER_TEST_MODEL_DIR=/absolute/path/to/mmarco-mMiniLMv2-L12-H384-v1 python -m
 совместимо с текущим маршрутом Claude Sonnet в Caila; для другого endpoint можно
 явно задать `LLM_STRUCTURED_METHOD=json_schema` или `json_mode`. Модель и ключ
 этой настройкой не меняются.
+
+На повторных итерациях системные инструкции объединяются перед диалогом,
+а новая генерация запрашивается сообщением пользователя. Это устраняет HTTP 400
+на маршруте Sonnet, который не принимает позднее `system` после ответа `assistant`.
