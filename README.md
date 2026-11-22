@@ -8,7 +8,7 @@ SQL-HR — сервис подбора кандидатов из CSV-базы с
 
 Текущий [английский черновик статьи](docs/track-b/literature/paper.docx) пока охватывает более широкий трек B и готовится как задание по английскому языку в аспирантуре. В дальнейшем он станет основой исследовательской статьи: постановку и текст планируется сузить под этап 02.1. В обновлении от 19.11.2026 добавлены два абзаца; новых источников не добавлено. Черновик не означает, что метод и эксперименты этапа 02.1 уже завершены.
 
-Рядом находятся [рабочий обзор литературы](docs/track-b/literature/literature-review.md), [библиография](docs/track-b/literature/references.md) и [матрица литературы](docs/track-b/literature/track-b-literature-matrix.xlsx).
+Рядом находятся [рабочий обзор литературы](docs/track-b/literature/paper.md), [библиография](docs/track-b/literature/references.md) и [матрица литературы](docs/track-b/literature/track-b-literature-matrix.xlsx).
 
 ## Деплой
 

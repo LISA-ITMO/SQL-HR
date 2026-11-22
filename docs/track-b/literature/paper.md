@@ -1,6 +1,4 @@
-# Evidence-based competency assessment
-
-## Introduction
+## 1 Introduction
 
 The growing adoption of artificial intelligence is changing the skills required in many occupations and contributing to the transformation of professional roles [1]. These changes make it increasingly important to describe professional requirements more precisely than job titles alone allow. Competency frameworks, such as the Skills Framework for the Information Age (SFIA 9) [18], provide structured descriptions of professional competencies and proficiency levels that can support the specification of role requirements. However, defining the competencies required for a role does not necessarily establish how these requirements should be used to assess an individual candidate.
 
@@ -12,7 +10,7 @@ To address this problem, this paper proposes a procedure for evidence-grounded c
 
 The study aims to investigate how evidence-grounded competency assessments can support person-job fit evaluation and how the resulting assessments and explanations affect candidate ranking and selection decisions. The evaluation examined agreement with expert judgments, the traceability of supporting evidence, and the effects of explicitly representing proficiency gaps and uncertainty on candidate comparisons and selection decisions. The contributions of this study are a reproducible procedure for connecting competency-based role requirements with documented candidate evidence, an empirical assessment of its influence on ranking and candidate selection, and insights into explainable artificial intelligence (XAI) for person-job fit by making the evidence and reasoning behind candidate assessments more transparent and verifiable.
 
-## Related Works
+## 2 Related Works
 
 Competency frameworks provide structured representations of professional requirements, although their purposes and granularity vary. SFIA 9 [18] specifies professional skills across seven levels of responsibility, while the European e-Competence Framework (e-CF) [21] describes information and communication technology (ICT) competencies and associated proficiency levels. European Skills, Competences, Qualifications and Occupations (ESCO) [19] and the Occupational Information Network (O*NET) [20] organize occupations and related skill or work descriptors. More specialized competency-role models, including ITMO University’s competency-role model (KRM) [16] and the Moscow Institute of Physics and Technology (MIPT) competency-role materials [17], describe professional requirements through competencies, indicators, and proficiency levels. These resources provide reference structures for specifying role requirements, but applying them to individual candidate assessment requires decisions about how available evidence should be interpreted.
 
@@ -26,19 +24,15 @@ Uncertainty handling is also relevant to evidence-grounded assessment. Wen et al
 
 Taken together, existing research provides foundations for competency representation, evidence-based assessment, person-job fit, explainable ranking, and constraint-based recommendation. However, an open methodological question concerns how heterogeneous candidate evidence can be systematically evaluated against role-specific competency indicators and proficiency requirements while distinguishing demonstrated proficiency gaps from insufficient information. It also remains important to investigate how such evidence-grounded assessments affect candidate ranking and how their explanations support the interpretation of candidate comparisons and selection decisions. Addressing these questions requires empirical evaluation of agreement with expert judgments, evidence traceability, ranking quality, and explanation usefulness.
 
-## Methods
+## 3 Methods
 
-### Study Design and Data
-
-This study was designed as a pilot evaluation of an evidence-grounded candidate assessment method based on competency-role models. ITMO KRM [16] was used as the primary reference framework because it provides structured descriptions of professional roles, competencies, indicators, and proficiency levels. The MIPT competency-role materials [17] were also considered as an additional reference for examining the applicability of the procedure to another competency-role model.
+3.1. Study Design and Data. This study was designed as a pilot evaluation of an evidence-grounded candidate assessment method based on competency-role models. ITMO KRM [16] was used as the primary reference framework because it provides structured descriptions of professional roles, competencies, indicators, and proficiency levels. The MIPT competency-role materials [17] were also considered as an additional reference for examining the applicability of the procedure to another competency-role model.
 
 The dataset combined three sources: publicly available candidate profiles collected from online recruitment platforms and subsequently de-identified, synthetically generated candidate profiles, and de-identified records of students working in a research laboratory at ITMO University. The data included cv’s, project descriptions, portfolios, and documented achievements.
 
 The pilot study included three to five professional roles and approximately 20-30 candidate profiles per role. Two domain experts participated in the assessment. Personal information in the real candidate records was anonymized before evaluation.
 
-### Assessment Procedure
-
-The assessment began with the selection of professional roles and their competency requirements from the reference model. For each role, we identified the relevant competencies, their indicators, and the required proficiency levels. Where the model did not specify target levels for individual indicators, these were defined using assessment guidelines agreed upon with domain experts.
+3.2. Assessment Procedure. The assessment began with the selection of professional roles and their competency requirements from the reference model. For each role, we identified the relevant competencies, their indicators, and the required proficiency levels. Where the model did not specify target levels for individual indicators, these were defined using assessment guidelines agreed upon with domain experts.
 
 Candidate profiles were then analyzed to identify evidence of relevant skills and experience, including descriptions of completed projects, specific responsibilities, technical tasks, and achieved results. Each relevant fragment was linked to a competency indicator, with a reference to the original document. For example, mentioning a programming language in a résumé does not necessarily demonstrate proficiency unless the candidate’s actual experience with it is described.
 
@@ -46,8 +40,42 @@ The identified evidence was compared with the proficiency-level descriptions for
 
 Finally, the indicator-level assessments were used to compare candidates against the requirements of each role. Candidate rankings were calculated based on demonstrated proficiency, identified competency gaps, and insufficient evidence. The resulting rankings were accompanied by explanations referring to the specific evidence used in the assessments.
 
-### Evaluation and Data Analysis
-
-The method was evaluated through expert annotation, assessment by LLM-as-a-Judge, and comparison with simpler matching approaches. Two domain experts independently assessed candidate evidence and assigned proficiency levels to the relevant indicators. In parallel, a large language model was used as an automated judge to evaluate the same evidence against the competency indicators and proficiency-level descriptions. Disagreements between human experts were discussed to establish a consensus reference.
+3.3. Evaluation and Data Analysis. The method was evaluated through expert annotation, assessment by LLM-as-a-Judge, and comparison with simpler matching approaches. Two domain experts independently assessed candidate evidence and assigned proficiency levels to the relevant indicators. In parallel, a large language model was used as an automated judge to evaluate the same evidence against the competency indicators and proficiency-level descriptions. Disagreements between human experts were discussed to establish a consensus reference.
 
 Inter-annotator agreement was measured using appropriate agreement statistics, including ordinal Krippendorff's alpha for proficiency levels. Agreement between LLM-as-a-Judge assessments and expert consensus was also evaluated. Candidate rankings were compared with expert judgments and rankings produced by baseline methods, including keyword-based matching and competency-level matching without indicator granularity.
+
+Ranking agreement was measured using rank correlation coefficients. The effect of handling insufficient evidence was examined by comparing candidate rankings with and without its explicit consideration. Domain experts also evaluated the validity of evidence references, the relevance of supporting evidence, and the usefulness of explanations for interpreting candidate comparisons.
+
+## 4 Results
+
+The pilot study examined the applicability of the proposed evidence-grounded assessment method to candidate evaluation and ranking. A total of N candidate profiles were assessed across R professional roles from the ITMO KRM [16]. The analysis focused on the agreement between expert assessments, the sufficiency of candidate evidence, ranking quality, and the traceability of assessment decisions.
+
+The ordinal Krippendorff's alpha for proficiency-level assessments between the two domain experts was X. The LLM-as-a-Judge assessments agreed with the expert consensus in Y% of cases. The main disagreements concerned [types of competencies or evidence in which we had disagreements], for which the available information allowed different interpretations of the candidate's demonstrated proficiency.
+
+Of all indicator-level assessments, A% supported the required proficiency level, while B% supported a level below the role requirement. In the remaining C% of cases, the evidence was insufficient to determine a proficiency level. The proportion of assessments with insufficient evidence varied across professional roles and data sources, ranging from D% to E%.
+
+Table 1 presents a comparison of candidate rankings produced by the proposed method and the baseline approaches.
+
+Table 1. Comparison of candidate ranking methods
+
+| Assessment method | Agreement with expert ranking |
+| --- | --- |
+| Keyword-based matching | X1 |
+| Competency-level matching | X2 |
+| Proposed indicator-level assessment | X3 |
+
+The ranking correlation with expert judgments was X3 for the proposed method, compared with X1 and X2 for keyword-based and competency-level matching, respectively. Explicit consideration of insufficient evidence resulted in changes in the ranking positions of [F]% of candidates.
+
+In addition, [G]% of competency assessments contained valid references to the original evidence, and experts confirmed the relevance of the supporting evidence in [H]% of the evaluated cases. The explanations were considered useful for interpreting candidate comparisons in [I]% of cases.
+
+## 5 Discussion
+
+The main contribution of this study is an approach to candidate assessment that connects competency-based role requirements with the documented evidence of individual skills and experience. An important aspect of the proposed method is the distinction between identifying relevant candidate experience and determining whether the available evidence is sufficient to support a competency assessment.
+
+Previous competency ontologies [2, 3] provided a foundation for representing competencies, proficiency levels, and supporting evidence. We adapted these concepts to role-specific competency indicators and drew on the idea of traceable text-to-competency alignment explored by Lê et al. [4] to connect candidate assessments with supporting fragments from resumes, portfolios, and project descriptions. Existing person-job fit methods [5-7] also informed our approach to comparing candidate profiles with job requirements. However, rather than relying solely on the correspondence between candidate experience and role requirements, we introduced an explicit assessment of evidence sufficiency. This allowed us to distinguish demonstrated proficiency gaps from insufficient information and incorporate this distinction into candidate ranking and explanations.
+
+The ranking and evidence-traceability results were considered together to examine not only how candidate assessments affected ranking outcomes but also how clearly these outcomes could be explained. From the perspective of explainable artificial intelligence, linking assessments to specific evidence fragments allows users to examine the grounds for candidate recommendations. These explanations could help experts interpret differences between candidates, identify missing information, and formulate additional questions during the selection process. The distinction between demonstrated competency gaps and insufficient evidence may also support more informed ranking decisions.
+
+The pilot study was limited in size and focused on a selected set of professional roles. Moreover, the reliability of competency assessments depends on the quality of the available candidate documents and the interpretation of competency indicators by domain experts. Evidence extracted from candidate records does not necessarily constitute independent verification of the reported experience.
+
+Further research would investigate the applicability of the proposed method across different professional domains and competency-role frameworks. Additional attention would be given to the inference of proficiency levels and the development of neuro-symbolic reasoning mechanisms for combining multiple sources of evidence. The proposed approach could provide a foundation for decision-support systems in recruitment, research team formation, and professional development.
